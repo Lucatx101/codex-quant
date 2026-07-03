@@ -1,0 +1,7 @@
+app_env: development
+log_level: INFO
+data_dir: data
+report_dir: reports
+request_timeout_seconds: 10
+max_retry_attempts: 2
+provider: vnstock

@@ -1,0 +1,49 @@
+# macOS
+.DS_Store
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+
+# Logs and temporary files
+*.log
+tmp/
+temp/
+
+# IDE-local state
+.vscode/
+.idea/
+
+# Generated market data and local databases
+data/raw/**
+data/normalized/**
+data/cache/**
+*.sqlite
+*.sqlite3
+*.db
+
+# Keep intentional placeholder files
+!data/raw/.gitkeep
+!data/normalized/.gitkeep
+!data/cache/.gitkeep

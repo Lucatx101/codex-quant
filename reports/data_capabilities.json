@@ -1,0 +1,483 @@
+{
+  "authentication_state": "VNSTOCK_API_KEY missing",
+  "blocking_issues": [
+    "Live vnstock audit was not executed because offline mode was used.",
+    "VNSTOCK_API_KEY was not available in the Codex shell."
+  ],
+  "capabilities": [
+    {
+      "authentication_tier": "community/free or unknown",
+      "capability_name": "daily historical OHLCV",
+      "data_quality_findings": [],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": null,
+      "error_category": "NONE",
+      "evidence_notes": [
+        "Official Market docs document equity ohlcv with intervals including 1D.",
+        "Installed signature uses resolution='1D' and source='kbs'."
+      ],
+      "latest_timestamp": null,
+      "library_method": "Market().equity(symbol).ohlcv(..., resolution='1D')",
+      "limitations": [
+        "Live data schema, adjusted/unadjusted status, and invalid-symbol behavior are unverified."
+      ],
+      "package_name": "vnstock",
+      "package_version": "4.0.4",
+      "provider": "vnstock",
+      "request_timestamp": "2026-07-03T18:19:19.851304Z",
+      "returned_row_count": null,
+      "sanitized_error_message": null,
+      "schema_summary": {},
+      "status": "DOCUMENTED_NOT_TESTED",
+      "tested_symbols": [
+        "FPT",
+        "HPG",
+        "VCB"
+      ],
+      "timezone_information": null
+    },
+    {
+      "authentication_tier": "community/free or unknown",
+      "capability_name": "historical intraday bars",
+      "data_quality_findings": [],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": null,
+      "error_category": "NONE",
+      "evidence_notes": [
+        "Official Market docs list 1m, 5m, 15m, 30m, 1h, 1D, and 1W intervals.",
+        "Agent Guide notes intraday data is recent only."
+      ],
+      "latest_timestamp": null,
+      "library_method": "Market().equity(symbol).ohlcv(..., resolution='1m')",
+      "limitations": [
+        "Free-tier lookback, delay, pagination, and practical polling suitability are unverified."
+      ],
+      "package_name": "vnstock",
+      "package_version": "4.0.4",
+      "provider": "vnstock",
+      "request_timestamp": "2026-07-03T18:19:19.851318Z",
+      "returned_row_count": null,
+      "sanitized_error_message": null,
+      "schema_summary": {},
+      "status": "DOCUMENTED_NOT_TESTED",
+      "tested_symbols": [
+        "FPT"
+      ],
+      "timezone_information": null
+    },
+    {
+      "authentication_tier": "community/free or unknown",
+      "capability_name": "latest quote",
+      "data_quality_findings": [],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": null,
+      "error_category": "NONE",
+      "evidence_notes": [
+        "Official Market docs document quote() for an equity symbol."
+      ],
+      "latest_timestamp": null,
+      "library_method": "Market().equity(symbol).quote()",
+      "limitations": [],
+      "package_name": "vnstock",
+      "package_version": "4.0.4",
+      "provider": "vnstock",
+      "request_timestamp": "2026-07-03T18:19:19.851320Z",
+      "returned_row_count": null,
+      "sanitized_error_message": null,
+      "schema_summary": {},
+      "status": "DOCUMENTED_NOT_TESTED",
+      "tested_symbols": [
+        "VCB"
+      ],
+      "timezone_information": null
+    },
+    {
+      "authentication_tier": "community/free or unknown",
+      "capability_name": "batch price board",
+      "data_quality_findings": [],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": null,
+      "error_category": "NONE",
+      "evidence_notes": [
+        "Official Market docs document quote() with a list of symbols."
+      ],
+      "latest_timestamp": null,
+      "library_method": "Market().quote(['VCB', 'HPG', 'FPT'])",
+      "limitations": [
+        "Maximum symbols per request and latency are unverified."
+      ],
+      "package_name": "vnstock",
+      "package_version": "4.0.4",
+      "provider": "vnstock",
+      "request_timestamp": "2026-07-03T18:19:19.851323Z",
+      "returned_row_count": null,
+      "sanitized_error_message": null,
+      "schema_summary": {},
+      "status": "DOCUMENTED_NOT_TESTED",
+      "tested_symbols": [
+        "FPT",
+        "HPG",
+        "VCB"
+      ],
+      "timezone_information": null
+    },
+    {
+      "authentication_tier": "community/free or unknown",
+      "capability_name": "symbol metadata",
+      "data_quality_findings": [],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": null,
+      "error_category": "NONE",
+      "evidence_notes": [
+        "Official Reference docs document listed equity and company info methods."
+      ],
+      "latest_timestamp": null,
+      "library_method": "Reference().equity.list() / Reference().company(symbol).info()",
+      "limitations": [],
+      "package_name": "vnstock",
+      "package_version": "4.0.4",
+      "provider": "vnstock",
+      "request_timestamp": "2026-07-03T18:19:19.851327Z",
+      "returned_row_count": null,
+      "sanitized_error_message": null,
+      "schema_summary": {},
+      "status": "DOCUMENTED_NOT_TESTED",
+      "tested_symbols": [
+        "FPT",
+        "HPG",
+        "VCB"
+      ],
+      "timezone_information": null
+    },
+    {
+      "authentication_tier": "community/free or unknown",
+      "capability_name": "current exchange universe",
+      "data_quality_findings": [],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": null,
+      "error_category": "NONE",
+      "evidence_notes": [
+        "Official Reference docs document list_by_exchange for HOSE, HNX, UPCOM."
+      ],
+      "latest_timestamp": null,
+      "library_method": "Reference().equity.list_by_exchange()",
+      "limitations": [
+        "Historical point-in-time universe membership is unverified."
+      ],
+      "package_name": "vnstock",
+      "package_version": "4.0.4",
+      "provider": "vnstock",
+      "request_timestamp": "2026-07-03T18:19:19.851329Z",
+      "returned_row_count": null,
+      "sanitized_error_message": null,
+      "schema_summary": {},
+      "status": "DOCUMENTED_NOT_TESTED",
+      "tested_symbols": [
+        "HOSE"
+      ],
+      "timezone_information": null
+    },
+    {
+      "authentication_tier": "community/free or unknown",
+      "capability_name": "listing date and delisting status",
+      "data_quality_findings": [],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": null,
+      "error_category": "NONE",
+      "evidence_notes": [
+        "Company info is documented, but listing/delisting fields were not verified."
+      ],
+      "latest_timestamp": null,
+      "library_method": "Reference().company(symbol).info()",
+      "limitations": [],
+      "package_name": "vnstock",
+      "package_version": "4.0.4",
+      "provider": "vnstock",
+      "request_timestamp": "2026-07-03T18:19:19.851331Z",
+      "returned_row_count": null,
+      "sanitized_error_message": null,
+      "schema_summary": {},
+      "status": "UNKNOWN",
+      "tested_symbols": [
+        "FPT"
+      ],
+      "timezone_information": null
+    },
+    {
+      "authentication_tier": "community/free or unknown",
+      "capability_name": "corporate actions",
+      "data_quality_findings": [],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": null,
+      "error_category": "NONE",
+      "evidence_notes": [
+        "Official Reference docs document company events."
+      ],
+      "latest_timestamp": null,
+      "library_method": "Reference().company(symbol).events()",
+      "limitations": [
+        "Ex-date, record-date, split, rights, and completeness fields are unverified."
+      ],
+      "package_name": "vnstock",
+      "package_version": "4.0.4",
+      "provider": "vnstock",
+      "request_timestamp": "2026-07-03T18:19:19.851332Z",
+      "returned_row_count": null,
+      "sanitized_error_message": null,
+      "schema_summary": {},
+      "status": "DOCUMENTED_NOT_TESTED",
+      "tested_symbols": [
+        "FPT"
+      ],
+      "timezone_information": null
+    },
+    {
+      "authentication_tier": "community/free or unknown",
+      "capability_name": "adjusted prices",
+      "data_quality_findings": [],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": null,
+      "error_category": "NONE",
+      "evidence_notes": [
+        "Adjusted versus unadjusted price semantics were not verified in docs or live data."
+      ],
+      "latest_timestamp": null,
+      "library_method": "Market().equity(symbol).ohlcv()",
+      "limitations": [],
+      "package_name": "vnstock",
+      "package_version": "4.0.4",
+      "provider": "vnstock",
+      "request_timestamp": "2026-07-03T18:19:19.851334Z",
+      "returned_row_count": null,
+      "sanitized_error_message": null,
+      "schema_summary": {},
+      "status": "UNKNOWN",
+      "tested_symbols": [
+        "FPT"
+      ],
+      "timezone_information": null
+    },
+    {
+      "authentication_tier": "community/free or unknown",
+      "capability_name": "foreign trading",
+      "data_quality_findings": [],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": null,
+      "error_category": "NONE",
+      "evidence_notes": [
+        "Official free-vs-sponsor comparison lists foreign_flow as missing from community Market.equity."
+      ],
+      "latest_timestamp": null,
+      "library_method": null,
+      "limitations": [],
+      "package_name": "vnstock",
+      "package_version": "4.0.4",
+      "provider": "vnstock",
+      "request_timestamp": "2026-07-03T18:19:19.851335Z",
+      "returned_row_count": null,
+      "sanitized_error_message": null,
+      "schema_summary": {},
+      "status": "UNAVAILABLE_FREE_TIER",
+      "tested_symbols": [],
+      "timezone_information": null
+    },
+    {
+      "authentication_tier": "community/free or unknown",
+      "capability_name": "proprietary trading",
+      "data_quality_findings": [],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": null,
+      "error_category": "NONE",
+      "evidence_notes": [
+        "Official free-vs-sponsor comparison lists proprietary_flow as missing from community Market.equity."
+      ],
+      "latest_timestamp": null,
+      "library_method": null,
+      "limitations": [],
+      "package_name": "vnstock",
+      "package_version": "4.0.4",
+      "provider": "vnstock",
+      "request_timestamp": "2026-07-03T18:19:19.851337Z",
+      "returned_row_count": null,
+      "sanitized_error_message": null,
+      "schema_summary": {},
+      "status": "UNAVAILABLE_FREE_TIER",
+      "tested_symbols": [],
+      "timezone_information": null
+    },
+    {
+      "authentication_tier": "community/free or unknown",
+      "capability_name": "order-book depth",
+      "data_quality_findings": [],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": null,
+      "error_category": "NONE",
+      "evidence_notes": [
+        "Official free-vs-sponsor comparison lists order_book as missing from community Market.equity.",
+        "Version history notes price_depth removal from free VCI quote."
+      ],
+      "latest_timestamp": null,
+      "library_method": null,
+      "limitations": [],
+      "package_name": "vnstock",
+      "package_version": "4.0.4",
+      "provider": "vnstock",
+      "request_timestamp": "2026-07-03T18:19:19.851338Z",
+      "returned_row_count": null,
+      "sanitized_error_message": null,
+      "schema_summary": {},
+      "status": "UNAVAILABLE_FREE_TIER",
+      "tested_symbols": [],
+      "timezone_information": null
+    },
+    {
+      "authentication_tier": "community/free or unknown",
+      "capability_name": "streaming or WebSocket",
+      "data_quality_findings": [],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": null,
+      "error_category": "NONE",
+      "evidence_notes": [
+        "No documented WebSocket interface was found in the inspected free-package docs.",
+        "Agent Guide lists production pipeline/streaming under sponsored libraries."
+      ],
+      "latest_timestamp": null,
+      "library_method": null,
+      "limitations": [],
+      "package_name": "vnstock",
+      "package_version": "4.0.4",
+      "provider": "vnstock",
+      "request_timestamp": "2026-07-03T18:19:19.851340Z",
+      "returned_row_count": null,
+      "sanitized_error_message": null,
+      "schema_summary": {},
+      "status": "UNAVAILABLE_PACKAGE",
+      "tested_symbols": [],
+      "timezone_information": null
+    },
+    {
+      "authentication_tier": "community/free or unknown",
+      "capability_name": "rate limits",
+      "data_quality_findings": [],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": null,
+      "error_category": "NONE",
+      "evidence_notes": [
+        "Local package startup text observed community tier as 60 requests per minute.",
+        "Official comparison page states community rate limits are very low for automated systems."
+      ],
+      "latest_timestamp": null,
+      "library_method": null,
+      "limitations": [
+        "No live response headers were observed in this run."
+      ],
+      "package_name": "vnstock",
+      "package_version": "4.0.4",
+      "provider": "vnstock",
+      "request_timestamp": "2026-07-03T18:19:19.851342Z",
+      "returned_row_count": null,
+      "sanitized_error_message": null,
+      "schema_summary": {},
+      "status": "DOCUMENTED_NOT_TESTED",
+      "tested_symbols": [],
+      "timezone_information": null
+    }
+  ],
+  "conclusions": {
+    "alternative_or_paid_source_needed": "Likely needed if Phase 1 requires robust minute histories, streaming, order book, or point-in-time corporate-action data.",
+    "batch_price_board_polling_practical": "Documented for multiple symbols; maximum batch size and latency are unverified.",
+    "daily_ohlcv_usable": "Documented and package-exposed; require live schema validation before production use. Not live-verified in this Phase 0 run.",
+    "free_tier_minute_polling_practical": "Unverified; assume not practical beyond a very small universe until live rate/latency evidence exists.",
+    "historical_minute_data_usable": "Documented at 1m resolution, but free-tier lookback/delay/pagination remain unverified. Not live-verified in this Phase 0 run.",
+    "recommended_maximum_initial_live_universe": "20 symbols until live audit proves latency and rate-limit headroom.",
+    "recommended_polling_frequency": "At most once per minute for initial experiments; reduce if rate-limit signals appear.",
+    "websocket_free_tier_available": "No free-tier WebSocket interface was verified."
+  },
+  "documentation_sources": [
+    "https://vnstocks.com/docs",
+    "https://vnstocks.com/docs/vnstock/du-lieu-thi-truong-market-data",
+    "https://vnstocks.com/docs/vnstock/tra-cuu-thong-tin-tham-chieu-reference",
+    "https://vnstocks.com/docs/vnstock/so-sanh-free-va-sponsor",
+    "https://vnstocks.com/docs/tai-lieu/lich-su-phien-ban",
+    "https://github.com/vnstock-hq/vnstock-agent-guide/blob/main/AGENTS.md"
+  ],
+  "documented_free_tier_constraints": [
+    "Community/free users are directed to the vnstock package only.",
+    "Official comparison states community rate limits are very low for automated systems.",
+    "Local package startup message observed community tier as 60 requests per minute.",
+    "Sponsor documentation advertises higher limits and deeper data for automated workflows."
+  ],
+  "documented_rate_limit": "Community package startup message observed 60 requests/minute; official comparison page describes free rate limits as very low but does not provide a full quota table.",
+  "execution_timestamp": "2026-07-03T18:19:19.851383Z",
+  "operating_system": "Darwin 25.5.0",
+  "package_inspection": {
+    "authentication_mechanism": "Project live audit reads VNSTOCK_API_KEY; installed package exposes register_user and change_api_key helpers and also maintains local ~/.vnstock auth state.",
+    "import_notes": [],
+    "module_path": "/Users/lucatxtruong/Library/Python/3.13/lib/python/site-packages/vnstock/__init__.py",
+    "package_name": "vnstock",
+    "package_version": "4.0.4",
+    "python_requires": ">=3.10",
+    "supported_providers_found": [
+      "kbs",
+      "msn",
+      "vci"
+    ],
+    "top_level_symbols": [
+      "Broker",
+      "Company",
+      "EXCHANGES",
+      "Finance",
+      "Fund",
+      "Fundamental",
+      "INDEX_GROUPS",
+      "INDICES_INFO",
+      "INDICES_MAP",
+      "Listing",
+      "Market",
+      "Quote",
+      "Reference",
+      "Retail",
+      "SECTOR_IDS",
+      "Trading",
+      "Vnstock",
+      "api",
+      "base",
+      "change_api_key",
+      "check_sponsor_package",
+      "check_status",
+      "config",
+      "connector",
+      "constants",
+      "core",
+      "explorer",
+      "register_user",
+      "show_api",
+      "show_doc",
+      "show_docs",
+      "ui",
+      "update_notice",
+      "vnai"
+    ]
+  },
+  "project_name": "hose-quant-system",
+  "python_version": "3.13.9",
+  "recommended_phase_1_scope": [
+    "Run the live audit with VNSTOCK_API_KEY in a local shell and commit refreshed reports if checks pass.",
+    "Design immutable raw-data storage and normalized point-in-time schemas.",
+    "Define conservative polling limits for a small initial HOSE universe after live latency/rate evidence.",
+    "Decide whether paid or alternative data is needed for minute bars, point-in-time universe data, and corporate actions."
+  ],
+  "tested_symbols": [
+    "VNINDEX",
+    "FPT",
+    "HPG",
+    "VCB"
+  ],
+  "unresolved_uncertainties": [
+    "No live API-key-backed requests were completed in this Phase 0 run.",
+    "Historical point-in-time universe membership was not verified.",
+    "Adjusted-price methodology and corporate-action completeness were not verified.",
+    "Free-tier minute lookback, pagination behavior, and delay characteristics were not verified.",
+    "WebSocket entitlement for the free tier was not found in the free-package docs inspected."
+  ]
+}
