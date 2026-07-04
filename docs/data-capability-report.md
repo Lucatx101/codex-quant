@@ -2,11 +2,11 @@
 
 ## Execution
 
-- Timestamp: 2026-07-03T18:19:19.851383+00:00
+- Timestamp: 2026-07-04T01:51:48.898327+00:00
 - Operating system: Darwin 25.5.0
 - Python: 3.13.9
 - Package: vnstock 4.0.4
-- Authentication: VNSTOCK_API_KEY missing
+- Authentication: VNSTOCK_API_KEY set
 
 ## Documentation Sources
 
@@ -27,67 +27,71 @@
 
 ## Capability Summary
 
-- DOCUMENTED_NOT_TESTED: 8
+- VERIFIED: 5
+- DOCUMENTED_NOT_TESTED: 2
 - UNAVAILABLE_FREE_TIER: 3
 - UNAVAILABLE_PACKAGE: 1
+- EMPTY_RESPONSE: 1
 - UNKNOWN: 2
 
 ## Detailed Findings
 
 ### daily historical OHLCV
 
-- Status: DOCUMENTED_NOT_TESTED
-- Method or endpoint: Market().equity(symbol).ohlcv(..., resolution='1D')
-- Tested symbols: FPT, HPG, VCB
-- Returned rows: not tested
-- Latency: not tested ms
-- Earliest timestamp: not available
-- Latest timestamp: not available
-- Timezone: not available
+- Status: VERIFIED
+- Method or endpoint: Market().equity('FPT').ohlcv(..., resolution='1D')
+- Tested symbols: FPT
+- Returned rows: 33
+- Latency: 1965.54 ms
+- Earliest timestamp: 2026-05-20T07:00:00
+- Latest timestamp: 2026-07-03T07:00:00
+- Timezone: naive/unspecified
 - Error category: NONE
-- Limitations: Live data schema, adjusted/unadjusted status, and invalid-symbol behavior are unverified.
-- Evidence: Official Market docs document equity ohlcv with intervals including 1D.; Installed signature uses resolution='1D' and source='kbs'.
+- Schema: time: datetime64[ns], open: float64, high: float64, low: float64, close: float64, volume: int64
+- Evidence: Live request completed in the local environment.
 
 ### historical intraday bars
 
-- Status: DOCUMENTED_NOT_TESTED
-- Method or endpoint: Market().equity(symbol).ohlcv(..., resolution='1m')
+- Status: VERIFIED
+- Method or endpoint: Market().equity('FPT').ohlcv(..., resolution='1m')
 - Tested symbols: FPT
-- Returned rows: not tested
-- Latency: not tested ms
-- Earliest timestamp: not available
-- Latest timestamp: not available
-- Timezone: not available
+- Returned rows: 5
+- Latency: 195.63 ms
+- Earliest timestamp: 2026-07-03T14:26:00
+- Latest timestamp: 2026-07-03T14:40:00
+- Timezone: naive/unspecified
 - Error category: NONE
-- Limitations: Free-tier lookback, delay, pagination, and practical polling suitability are unverified.
-- Evidence: Official Market docs list 1m, 5m, 15m, 30m, 1h, 1D, and 1W intervals.; Agent Guide notes intraday data is recent only.
+- Schema: time: datetime64[ns], open: float64, high: float64, low: float64, close: float64, volume: int64
+- Evidence: Live request completed in the local environment.
 
 ### latest quote
 
-- Status: DOCUMENTED_NOT_TESTED
-- Method or endpoint: Market().equity(symbol).quote()
+- Status: VERIFIED
+- Method or endpoint: Market().equity('VCB').quote()
 - Tested symbols: VCB
-- Returned rows: not tested
-- Latency: not tested ms
-- Earliest timestamp: not available
-- Latest timestamp: not available
-- Timezone: not available
+- Returned rows: 1
+- Latency: 133.5 ms
+- Earliest timestamp: 1970-01-01T00:29:43.067546136
+- Latest timestamp: 1970-01-01T00:29:43.067546136
+- Timezone: naive/unspecified
 - Error category: NONE
-- Evidence: Official Market docs document quote() for an equity symbol.
+- Schema: symbol: object, time: int64, exchange: object, ceiling_price: int64, floor_price: int64, reference_price: int64, open_price: int64, high_price: int64, low_price: int64, close_price: int64, average_price: int64, volume_accumulated: int64, total_value: int64, price_change: int64, percent_change: float64, bid_price_1: object, bid_vol_1: int64, bid_price_2: int64, bid_vol_2: int64, bid_price_3: int64, bid_vol_3: int64, ask_price_1: object, ask_vol_1: int64, ask_price_2: int64, ask_vol_2: int64, ask_price_3: int64, ask_vol_3: int64, foreign_buy_volume: int64, foreign_sell_volume: int64, foreign_room: int64
+- Evidence: Live request completed in the local environment.
 
 ### batch price board
 
-- Status: DOCUMENTED_NOT_TESTED
+- Status: VERIFIED
 - Method or endpoint: Market().quote(['VCB', 'HPG', 'FPT'])
-- Tested symbols: FPT, HPG, VCB
-- Returned rows: not tested
-- Latency: not tested ms
-- Earliest timestamp: not available
-- Latest timestamp: not available
-- Timezone: not available
+- Tested symbols: VCB, HPG, FPT
+- Returned rows: 3
+- Latency: 107.95 ms
+- Earliest timestamp: 1970-01-01T00:29:43.067546136
+- Latest timestamp: 1970-01-01T00:29:43.067591754
+- Timezone: naive/unspecified
 - Error category: NONE
-- Limitations: Maximum symbols per request and latency are unverified.
-- Evidence: Official Market docs document quote() with a list of symbols.
+- Schema: symbol: object, time: int64, exchange: object, ceiling_price: int64, floor_price: int64, reference_price: int64, open_price: int64, high_price: int64, low_price: int64, close_price: int64, average_price: int64, volume_accumulated: int64, total_value: int64, price_change: int64, percent_change: float64, bid_price_1: object, bid_vol_1: int64, bid_price_2: int64, bid_vol_2: int64, bid_price_3: int64, bid_vol_3: int64, ask_price_1: object, ask_vol_1: int64, ask_price_2: int64, ask_vol_2: int64, ask_price_3: int64, ask_vol_3: int64, foreign_buy_volume: int64, foreign_sell_volume: int64, foreign_room: int64
+- Data quality findings: Timestamps in 'time' are not sorted ascending.
+- Evidence: Live request completed in the local environment.
 
 ### symbol metadata
 
@@ -104,17 +108,18 @@
 
 ### current exchange universe
 
-- Status: DOCUMENTED_NOT_TESTED
+- Status: VERIFIED
 - Method or endpoint: Reference().equity.list_by_exchange()
 - Tested symbols: HOSE
-- Returned rows: not tested
-- Latency: not tested ms
+- Returned rows: 3303
+- Latency: 342.14 ms
 - Earliest timestamp: not available
 - Latest timestamp: not available
 - Timezone: not available
 - Error category: NONE
-- Limitations: Historical point-in-time universe membership is unverified.
-- Evidence: Official Reference docs document list_by_exchange for HOSE, HNX, UPCOM.
+- Schema: symbol: object, organ_name: object, en_organ_name: object, exchange: object, type: object, id: int64
+- Data quality findings: No recognized timestamp column was present.; Null values detected in columns: organ_name, en_organ_name, exchange.
+- Evidence: Live request completed in the local environment.
 
 ### listing date and delisting status
 
@@ -131,17 +136,17 @@
 
 ### corporate actions
 
-- Status: DOCUMENTED_NOT_TESTED
-- Method or endpoint: Reference().company(symbol).events()
+- Status: EMPTY_RESPONSE
+- Method or endpoint: Reference().company('FPT').events()
 - Tested symbols: FPT
-- Returned rows: not tested
-- Latency: not tested ms
+- Returned rows: 0
+- Latency: 155.14 ms
 - Earliest timestamp: not available
 - Latest timestamp: not available
 - Timezone: not available
-- Error category: NONE
-- Limitations: Ex-date, record-date, split, rights, and completeness fields are unverified.
-- Evidence: Official Reference docs document company events.
+- Error category: EMPTY_RESPONSE
+- Data quality findings: Response contained no rows.
+- Evidence: Live request completed in the local environment.
 
 ### adjusted prices
 
@@ -232,7 +237,9 @@ No latency observations are available unless a live audit has been executed.
 
 ## Data-Quality Problems
 
-- No live data-quality findings recorded.
+- batch price board: Timestamps in 'time' are not sorted ascending.
+- current exchange universe: No recognized timestamp column was present.; Null values detected in columns: organ_name, en_organ_name, exchange.
+- corporate actions: Response contained no rows.
 
 ## Rate-Limit Implications
 
@@ -251,13 +258,12 @@ No latency observations are available unless a live audit has been executed.
 
 ## Blocking Issues
 
-- Live vnstock audit was not executed because offline mode was used.
-- VNSTOCK_API_KEY was not available in the Codex shell.
+- None recorded.
 
 ## Conclusions
 
-- daily_ohlcv_usable: Documented and package-exposed; require live schema validation before production use. Not live-verified in this Phase 0 run.
-- historical_minute_data_usable: Documented at 1m resolution, but free-tier lookback/delay/pagination remain unverified. Not live-verified in this Phase 0 run.
+- daily_ohlcv_usable: Documented and package-exposed; require live schema validation before production use.
+- historical_minute_data_usable: Documented at 1m resolution, but free-tier lookback/delay/pagination remain unverified.
 - free_tier_minute_polling_practical: Unverified; assume not practical beyond a very small universe until live rate/latency evidence exists.
 - batch_price_board_polling_practical: Documented for multiple symbols; maximum batch size and latency are unverified.
 - websocket_free_tier_available: No free-tier WebSocket interface was verified.
