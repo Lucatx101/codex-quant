@@ -52,3 +52,21 @@ def test_json_report_generation_is_deterministic_and_valid(tmp_path) -> None:
     second = json_path.read_text(encoding="utf-8")
     assert first == second
     assert json.loads(first)["project_name"] == "hose-quant-system"
+
+
+def test_live_report_does_not_claim_no_live_requests() -> None:
+    report = make_report()
+    report.authentication_state = "VNSTOCK_API_KEY set"
+    report.capabilities = [
+        CapabilityResult(
+            capability_name="daily historical OHLCV",
+            status=CapabilityStatus.VERIFIED,
+            elapsed_latency_ms=100,
+        )
+    ]
+    report.unresolved_uncertainties = [
+        "Historical point-in-time universe membership was not verified."
+    ]
+    markdown = render_markdown_report(report)
+    assert "No live API-key-backed requests were completed" not in markdown
+    assert "Latency observations are listed per capability above." in markdown

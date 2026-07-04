@@ -113,7 +113,7 @@ def render_markdown_report(report: AuditReport) -> str:
             "",
             "## Latency Observations",
             "",
-            "No latency observations are available unless a live audit has been executed.",
+            _latency_observation_text(report),
             "",
             "## Data-Quality Problems",
             "",
@@ -152,3 +152,9 @@ def render_markdown_report(report: AuditReport) -> str:
     lines.extend(f"- {item}" for item in report.recommended_phase_1_scope)
     lines.append("")
     return "\n".join(lines)
+
+
+def _latency_observation_text(report: AuditReport) -> str:
+    if any(capability.elapsed_latency_ms is not None for capability in report.capabilities):
+        return "Latency observations are listed per capability above."
+    return "No latency observations are available unless a live audit has been executed."

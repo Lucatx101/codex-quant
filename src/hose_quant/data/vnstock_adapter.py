@@ -89,6 +89,7 @@ def inspect_dataframe(
     *,
     required_columns: set[str] | None = None,
     timestamp_candidates: tuple[str, ...] = ("time", "date", "datetime", "tradingDate"),
+    parse_timestamps: bool = True,
 ) -> FrameInspection:
     if isinstance(value, pd.DataFrame):
         frame = value.copy()
@@ -127,6 +128,11 @@ def inspect_dataframe(
     earliest = latest = timezone = None
     if timestamp_column is None:
         findings.append("No recognized timestamp column was present.")
+    elif not parse_timestamps:
+        findings.append(
+            f"Timestamp column {timestamp_column!r} was preserved as provider-specific raw values."
+        )
+        timezone = "provider-specific/unparsed"
     else:
         parsed = pd.to_datetime(frame[timestamp_column], errors="coerce")
         valid = parsed.dropna()
@@ -173,7 +179,9 @@ class VnstockCapabilityAuditor:
             api_key = self.settings.require_vnstock_api_key()
             live_capabilities = self._run_live_checks(package, api_key)
             capabilities = self._merge_capabilities(capabilities, live_capabilities)
+            live_executed = bool(live_capabilities)
         else:
+            live_executed = False
             blocking_issues.append(
                 "Live vnstock audit was not executed because offline mode was used."
             )
@@ -205,19 +213,7 @@ class VnstockCapabilityAuditor:
                 "comparison page describes free rate limits as very low but does not provide "
                 "a full quota table."
             ),
-            unresolved_uncertainties=[
-                "No live API-key-backed requests were completed in this Phase 0 run.",
-                "Historical point-in-time universe membership was not verified.",
-                "Adjusted-price methodology and corporate-action completeness were not verified.",
-                (
-                    "Free-tier minute lookback, pagination behavior, and delay characteristics "
-                    "were not verified."
-                ),
-                (
-                    "WebSocket entitlement for the free tier was not found in the free-package "
-                    "docs inspected."
-                ),
-            ],
+            unresolved_uncertainties=self._unresolved_uncertainties(live_executed=live_executed),
             blocking_issues=blocking_issues,
             conclusions=self._conclusions(live=live),
             recommended_phase_1_scope=[
@@ -242,9 +238,7 @@ class VnstockCapabilityAuditor:
             dist = metadata.distribution("vnstock")
             version = dist.version
             raw_python_requires = dist.metadata.json.get("requires_python")
-            python_requires = (
-                raw_python_requires if isinstance(raw_python_requires, str) else None
-            )
+            python_requires = raw_python_requires if isinstance(raw_python_requires, str) else None
         except metadata.PackageNotFoundError:
             return PackageInspection(
                 package_version="not installed",
@@ -577,7 +571,12 @@ class VnstockCapabilityAuditor:
                 sanitized_error_message=sanitize_error(exc, [api_key]),
             )
         elapsed = round((time.perf_counter() - started) * 1000, 2)
-        frame = inspect_dataframe(response, required_columns=required_columns)
+        quote_capability = capability_name in {"latest quote", "batch price board"}
+        frame = inspect_dataframe(
+            response,
+            required_columns=required_columns,
+            parse_timestamps=not quote_capability,
+        )
         status = CapabilityStatus.VERIFIED
         if frame.error_category is ErrorCategory.EMPTY_RESPONSE:
             status = CapabilityStatus.EMPTY_RESPONSE
@@ -591,7 +590,7 @@ class VnstockCapabilityAuditor:
             tested_symbols=symbols,
             frame=frame,
             elapsed_latency_ms=elapsed,
-            evidence_notes=["Live request completed in the local environment."],
+            evidence_notes=self._live_evidence_notes(quote_capability=quote_capability),
         )
 
     def _with_retries(self, func: Callable[[], Any]) -> Any:
@@ -660,3 +659,144 @@ class VnstockCapabilityAuditor:
                 "order book, or point-in-time corporate-action data."
             ),
         }
+
+    def _unresolved_uncertainties(self, *, live_executed: bool) -> list[str]:
+        uncertainties = [
+            "Historical point-in-time universe membership was not verified.",
+            "Adjusted-price methodology and corporate-action completeness were not verified.",
+            (
+                "Free-tier minute lookback, pagination behavior, and delay characteristics "
+                "were not fully verified."
+            ),
+            "Quote provider time unit semantics were not verified in official documentation.",
+            (
+                "WebSocket entitlement for the free tier was not found in the free-package "
+                "docs inspected."
+            ),
+        ]
+        if not live_executed:
+            uncertainties.insert(
+                0,
+                "No live API-key-backed requests were completed in this Phase 0 run.",
+            )
+        return uncertainties
+
+    def _live_evidence_notes(self, *, quote_capability: bool) -> list[str]:
+        notes = ["Live request completed in the local environment."]
+        if quote_capability:
+            notes.append(
+                "Quote time field was observed as provider-specific raw data; official docs did "
+                "not verify unit semantics, so it was not parsed into a timestamp."
+            )
+        return notes
+
+
+class VnstockDataProvider:
+    """Thin vnstock fetch wrapper; normalization and validation live elsewhere."""
+
+    def __init__(self, settings: AppSettings) -> None:
+        self.settings = settings
+        self.call_count = 0
+        self._market: Any | None = None
+        self._reference: Any | None = None
+
+    def _ensure_client(self) -> tuple[Any, Any]:
+        if self._market is not None and self._reference is not None:
+            return self._market, self._reference
+
+        api_key = self.settings.require_vnstock_api_key()
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()),
+        ):
+            vnstock = importlib.import_module("vnstock")
+            change_api_key = getattr(vnstock, "change_api_key", None)
+            if callable(change_api_key):
+                change_api_key(api_key)
+            market_module = importlib.import_module("vnstock.ui")
+            self._market = market_module.Market()
+            self._reference = market_module.Reference()
+        return self._market, self._reference
+
+    def fetch_universe(self, exchange: str) -> pd.DataFrame:
+        _market, reference = self._ensure_client()
+        del _market
+        frame = self._call(lambda: reference.equity.list_by_exchange(source="kbs"))
+        if not isinstance(frame, pd.DataFrame):
+            return pd.DataFrame(frame)
+        return frame
+
+    def fetch_daily_ohlcv(self, symbol: str, start: date, end: date) -> pd.DataFrame:
+        market, _reference = self._ensure_client()
+        del _reference
+        frame = self._call(
+            lambda: market.equity(symbol.upper()).ohlcv(
+                start=start.isoformat(),
+                end=end.isoformat(),
+                resolution="1D",
+                count=1000,
+                source="kbs",
+            )
+        )
+        if not isinstance(frame, pd.DataFrame):
+            return pd.DataFrame(frame)
+        return frame
+
+    def fetch_intraday_bars(
+        self,
+        symbol: str,
+        resolution: str,
+        lookback_days: int,
+    ) -> pd.DataFrame:
+        market, _reference = self._ensure_client()
+        del _reference
+        end = date.today()
+        start = end - timedelta(days=lookback_days)
+        count = min(max(lookback_days * 390, 50), 1000)
+        frame = self._call(
+            lambda: market.equity(symbol.upper()).ohlcv(
+                start=start.isoformat(),
+                end=end.isoformat(),
+                resolution=resolution,
+                count=count,
+                source="kbs",
+            )
+        )
+        if not isinstance(frame, pd.DataFrame):
+            return pd.DataFrame(frame)
+        return frame
+
+    def fetch_quote_snapshot(self, symbols: list[str]) -> pd.DataFrame:
+        market, _reference = self._ensure_client()
+        del _reference
+        clean_symbols = [symbol.upper() for symbol in symbols]
+        frame = self._call(lambda: market.quote(clean_symbols))
+        if not isinstance(frame, pd.DataFrame):
+            return pd.DataFrame(frame)
+        return frame
+
+    def _call(self, func: Callable[[], Any]) -> Any:
+        last_exc: BaseException | None = None
+        for attempt in range(1, self.settings.max_retry_attempts + 1):
+            try:
+                self.call_count += 1
+                result = func()
+            except Exception as exc:  # pragma: no cover - live-provider dependent.
+                last_exc = exc
+                category = categorize_exception(exc)
+                if category in {
+                    ErrorCategory.AUTHENTICATION,
+                    ErrorCategory.INVALID_SCHEMA,
+                    ErrorCategory.EMPTY_RESPONSE,
+                }:
+                    raise
+                if attempt >= self.settings.max_retry_attempts:
+                    raise
+                time.sleep(min(2 ** (attempt - 1), 4))
+                continue
+            if self.settings.provider_sleep_seconds:
+                time.sleep(self.settings.provider_sleep_seconds)
+            return result
+        if last_exc:
+            raise last_exc
+        raise RuntimeError("Provider call did not execute.")

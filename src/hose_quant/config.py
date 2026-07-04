@@ -34,6 +34,10 @@ class AppSettings(BaseSettings):
         validation_alias="REQUEST_TIMEOUT_SECONDS",
     )
     max_retry_attempts: int = Field(default=2, ge=1, le=5, validation_alias="MAX_RETRY_ATTEMPTS")
+    provider_sleep_seconds: float = Field(
+        default=0.0, ge=0, validation_alias="PROVIDER_SLEEP_SECONDS"
+    )
+    max_quote_symbols: int = Field(default=20, ge=1, validation_alias="MAX_QUOTE_SYMBOLS")
     provider: str = Field(default="vnstock", validation_alias="PROVIDER")
 
     @field_validator("log_level")
@@ -71,6 +75,8 @@ class AppSettings(BaseSettings):
             "report_dir": str(self.report_dir),
             "request_timeout_seconds": self.request_timeout_seconds,
             "max_retry_attempts": self.max_retry_attempts,
+            "provider_sleep_seconds": self.provider_sleep_seconds,
+            "max_quote_symbols": self.max_quote_symbols,
             "provider": self.provider,
         }
 

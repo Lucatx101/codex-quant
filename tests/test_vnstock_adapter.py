@@ -1,9 +1,21 @@
 from __future__ import annotations
 
 import pandas as pd
+from pydantic import SecretStr
 
-from hose_quant.data.models import ErrorCategory
-from hose_quant.data.vnstock_adapter import categorize_exception, inspect_dataframe, sanitize_error
+from hose_quant.config import AppSettings
+from hose_quant.data.models import (
+    CapabilityResult,
+    CapabilityStatus,
+    ErrorCategory,
+    PackageInspection,
+)
+from hose_quant.data.vnstock_adapter import (
+    VnstockCapabilityAuditor,
+    categorize_exception,
+    inspect_dataframe,
+    sanitize_error,
+)
 
 
 def test_error_categorization_timeout() -> None:
@@ -44,6 +56,46 @@ def test_duplicate_and_unsorted_timestamps_are_reported() -> None:
     findings = " ".join(inspection.data_quality_findings)
     assert "Duplicate timestamps" in findings
     assert "not sorted ascending" in findings
+
+
+def test_provider_specific_time_can_be_preserved_without_misleading_parse() -> None:
+    inspection = inspect_dataframe(
+        pd.DataFrame([{"symbol": "FPT", "time": 1783067546136}]),
+        parse_timestamps=False,
+    )
+    assert inspection.earliest_timestamp is None
+    assert inspection.timezone_information == "provider-specific/unparsed"
+    assert any("provider-specific raw" in item for item in inspection.data_quality_findings)
+
+
+def test_live_audit_uncertainties_do_not_include_no_live_claim(monkeypatch, tmp_path) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        vnstock_api_key=SecretStr("dummy-live-value"),
+        data_dir=tmp_path / "data",
+        report_dir=tmp_path / "reports",
+    )
+    auditor = VnstockCapabilityAuditor(settings)
+    monkeypatch.setattr(
+        auditor,
+        "inspect_package",
+        lambda: PackageInspection(package_version="4.0.4"),
+    )
+    monkeypatch.setattr(
+        auditor,
+        "_run_live_checks",
+        lambda package, api_key: [
+            CapabilityResult(
+                capability_name="daily historical OHLCV",
+                status=CapabilityStatus.VERIFIED,
+                elapsed_latency_ms=1,
+            )
+        ],
+    )
+    report = auditor.audit_capabilities(live=True)
+    assert not any(
+        "No live API-key-backed requests" in item for item in report.unresolved_uncertainties
+    )
 
 
 def test_sanitized_error_redacts_known_secret() -> None:

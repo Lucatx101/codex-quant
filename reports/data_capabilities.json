@@ -7,7 +7,7 @@
       "capability_name": "daily historical OHLCV",
       "data_quality_findings": [],
       "earliest_timestamp": "2026-05-20T07:00:00",
-      "elapsed_latency_ms": 1965.54,
+      "elapsed_latency_ms": 1432.42,
       "error_category": "NONE",
       "evidence_notes": [
         "Live request completed in the local environment."
@@ -18,7 +18,7 @@
       "package_name": "vnstock",
       "package_version": "4.0.4",
       "provider": "vnstock",
-      "request_timestamp": "2026-07-04T01:51:47.958390Z",
+      "request_timestamp": "2026-07-04T02:30:40.762844Z",
       "returned_row_count": 33,
       "sanitized_error_message": null,
       "schema_summary": {
@@ -40,7 +40,7 @@
       "capability_name": "historical intraday bars",
       "data_quality_findings": [],
       "earliest_timestamp": "2026-07-03T14:26:00",
-      "elapsed_latency_ms": 195.63,
+      "elapsed_latency_ms": 228.14,
       "error_category": "NONE",
       "evidence_notes": [
         "Live request completed in the local environment."
@@ -51,7 +51,7 @@
       "package_name": "vnstock",
       "package_version": "4.0.4",
       "provider": "vnstock",
-      "request_timestamp": "2026-07-04T01:51:48.154778Z",
+      "request_timestamp": "2026-07-04T02:30:40.991774Z",
       "returned_row_count": 5,
       "sanitized_error_message": null,
       "schema_summary": {
@@ -71,20 +71,23 @@
     {
       "authentication_tier": "community/free or unknown",
       "capability_name": "latest quote",
-      "data_quality_findings": [],
-      "earliest_timestamp": "1970-01-01T00:29:43.067546136",
-      "elapsed_latency_ms": 133.5,
+      "data_quality_findings": [
+        "Timestamp column 'time' was preserved as provider-specific raw values."
+      ],
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": 142.9,
       "error_category": "NONE",
       "evidence_notes": [
-        "Live request completed in the local environment."
+        "Live request completed in the local environment.",
+        "Quote time field was observed as provider-specific raw data; official docs did not verify unit semantics, so it was not parsed into a timestamp."
       ],
-      "latest_timestamp": "1970-01-01T00:29:43.067546136",
+      "latest_timestamp": null,
       "library_method": "Market().equity('VCB').quote()",
       "limitations": [],
       "package_name": "vnstock",
       "package_version": "4.0.4",
       "provider": "vnstock",
-      "request_timestamp": "2026-07-04T01:51:48.290165Z",
+      "request_timestamp": "2026-07-04T02:30:41.135839Z",
       "returned_row_count": 1,
       "sanitized_error_message": null,
       "schema_summary": {
@@ -123,27 +126,28 @@
       "tested_symbols": [
         "VCB"
       ],
-      "timezone_information": "naive/unspecified"
+      "timezone_information": "provider-specific/unparsed"
     },
     {
       "authentication_tier": "community/free or unknown",
       "capability_name": "batch price board",
       "data_quality_findings": [
-        "Timestamps in 'time' are not sorted ascending."
+        "Timestamp column 'time' was preserved as provider-specific raw values."
       ],
-      "earliest_timestamp": "1970-01-01T00:29:43.067546136",
-      "elapsed_latency_ms": 107.95,
+      "earliest_timestamp": null,
+      "elapsed_latency_ms": 154.58,
       "error_category": "NONE",
       "evidence_notes": [
-        "Live request completed in the local environment."
+        "Live request completed in the local environment.",
+        "Quote time field was observed as provider-specific raw data; official docs did not verify unit semantics, so it was not parsed into a timestamp."
       ],
-      "latest_timestamp": "1970-01-01T00:29:43.067591754",
+      "latest_timestamp": null,
       "library_method": "Market().quote(['VCB', 'HPG', 'FPT'])",
       "limitations": [],
       "package_name": "vnstock",
       "package_version": "4.0.4",
       "provider": "vnstock",
-      "request_timestamp": "2026-07-04T01:51:48.399331Z",
+      "request_timestamp": "2026-07-04T02:30:41.291538Z",
       "returned_row_count": 3,
       "sanitized_error_message": null,
       "schema_summary": {
@@ -184,7 +188,7 @@
         "HPG",
         "FPT"
       ],
-      "timezone_information": "naive/unspecified"
+      "timezone_information": "provider-specific/unparsed"
     },
     {
       "authentication_tier": "community/free or unknown",
@@ -202,7 +206,7 @@
       "package_name": "vnstock",
       "package_version": "4.0.4",
       "provider": "vnstock",
-      "request_timestamp": "2026-07-04T01:51:45.363604Z",
+      "request_timestamp": "2026-07-04T02:30:38.809866Z",
       "returned_row_count": null,
       "sanitized_error_message": null,
       "schema_summary": {},
@@ -222,7 +226,7 @@
         "Null values detected in columns: organ_name, en_organ_name, exchange."
       ],
       "earliest_timestamp": null,
-      "elapsed_latency_ms": 342.14,
+      "elapsed_latency_ms": 299.66,
       "error_category": "NONE",
       "evidence_notes": [
         "Live request completed in the local environment."
@@ -233,7 +237,7 @@
       "package_name": "vnstock",
       "package_version": "4.0.4",
       "provider": "vnstock",
-      "request_timestamp": "2026-07-04T01:51:48.742661Z",
+      "request_timestamp": "2026-07-04T02:30:41.591907Z",
       "returned_row_count": 3303,
       "sanitized_error_message": null,
       "schema_summary": {
@@ -266,7 +270,7 @@
       "package_name": "vnstock",
       "package_version": "4.0.4",
       "provider": "vnstock",
-      "request_timestamp": "2026-07-04T01:51:45.363608Z",
+      "request_timestamp": "2026-07-04T02:30:38.809870Z",
       "returned_row_count": null,
       "sanitized_error_message": null,
       "schema_summary": {},
@@ -283,7 +287,7 @@
         "Response contained no rows."
       ],
       "earliest_timestamp": null,
-      "elapsed_latency_ms": 155.14,
+      "elapsed_latency_ms": 127.74,
       "error_category": "EMPTY_RESPONSE",
       "evidence_notes": [
         "Live request completed in the local environment."
@@ -294,7 +298,7 @@
       "package_name": "vnstock",
       "package_version": "4.0.4",
       "provider": "vnstock",
-      "request_timestamp": "2026-07-04T01:51:48.898195Z",
+      "request_timestamp": "2026-07-04T02:30:41.720137Z",
       "returned_row_count": 0,
       "sanitized_error_message": null,
       "schema_summary": {},
@@ -320,7 +324,7 @@
       "package_name": "vnstock",
       "package_version": "4.0.4",
       "provider": "vnstock",
-      "request_timestamp": "2026-07-04T01:51:45.363611Z",
+      "request_timestamp": "2026-07-04T02:30:38.809874Z",
       "returned_row_count": null,
       "sanitized_error_message": null,
       "schema_summary": {},
@@ -346,7 +350,7 @@
       "package_name": "vnstock",
       "package_version": "4.0.4",
       "provider": "vnstock",
-      "request_timestamp": "2026-07-04T01:51:45.363615Z",
+      "request_timestamp": "2026-07-04T02:30:38.809876Z",
       "returned_row_count": null,
       "sanitized_error_message": null,
       "schema_summary": {},
@@ -370,7 +374,7 @@
       "package_name": "vnstock",
       "package_version": "4.0.4",
       "provider": "vnstock",
-      "request_timestamp": "2026-07-04T01:51:45.363617Z",
+      "request_timestamp": "2026-07-04T02:30:38.809878Z",
       "returned_row_count": null,
       "sanitized_error_message": null,
       "schema_summary": {},
@@ -395,7 +399,7 @@
       "package_name": "vnstock",
       "package_version": "4.0.4",
       "provider": "vnstock",
-      "request_timestamp": "2026-07-04T01:51:45.363628Z",
+      "request_timestamp": "2026-07-04T02:30:38.809879Z",
       "returned_row_count": null,
       "sanitized_error_message": null,
       "schema_summary": {},
@@ -420,7 +424,7 @@
       "package_name": "vnstock",
       "package_version": "4.0.4",
       "provider": "vnstock",
-      "request_timestamp": "2026-07-04T01:51:45.363631Z",
+      "request_timestamp": "2026-07-04T02:30:38.809881Z",
       "returned_row_count": null,
       "sanitized_error_message": null,
       "schema_summary": {},
@@ -447,7 +451,7 @@
       "package_name": "vnstock",
       "package_version": "4.0.4",
       "provider": "vnstock",
-      "request_timestamp": "2026-07-04T01:51:45.363637Z",
+      "request_timestamp": "2026-07-04T02:30:38.809882Z",
       "returned_row_count": null,
       "sanitized_error_message": null,
       "schema_summary": {},
@@ -481,7 +485,7 @@
     "Sponsor documentation advertises higher limits and deeper data for automated workflows."
   ],
   "documented_rate_limit": "Community package startup message observed 60 requests/minute; official comparison page describes free rate limits as very low but does not provide a full quota table.",
-  "execution_timestamp": "2026-07-04T01:51:48.898327Z",
+  "execution_timestamp": "2026-07-04T02:30:41.720460Z",
   "operating_system": "Darwin 25.5.0",
   "package_inspection": {
     "authentication_mechanism": "Project live audit reads VNSTOCK_API_KEY; installed package exposes register_user and change_api_key helpers and also maintains local ~/.vnstock auth state.",
@@ -547,10 +551,10 @@
     "VCB"
   ],
   "unresolved_uncertainties": [
-    "No live API-key-backed requests were completed in this Phase 0 run.",
     "Historical point-in-time universe membership was not verified.",
     "Adjusted-price methodology and corporate-action completeness were not verified.",
-    "Free-tier minute lookback, pagination behavior, and delay characteristics were not verified.",
+    "Free-tier minute lookback, pagination behavior, and delay characteristics were not fully verified.",
+    "Quote provider time unit semantics were not verified in official documentation.",
     "WebSocket entitlement for the free tier was not found in the free-package docs inspected."
   ]
 }

@@ -2,7 +2,7 @@
 
 ## Execution
 
-- Timestamp: 2026-07-04T01:51:48.898327+00:00
+- Timestamp: 2026-07-04T02:30:41.720460+00:00
 - Operating system: Darwin 25.5.0
 - Python: 3.13.9
 - Package: vnstock 4.0.4
@@ -42,7 +42,7 @@
 - Method or endpoint: Market().equity('FPT').ohlcv(..., resolution='1D')
 - Tested symbols: FPT
 - Returned rows: 33
-- Latency: 1965.54 ms
+- Latency: 1432.42 ms
 - Earliest timestamp: 2026-05-20T07:00:00
 - Latest timestamp: 2026-07-03T07:00:00
 - Timezone: naive/unspecified
@@ -56,7 +56,7 @@
 - Method or endpoint: Market().equity('FPT').ohlcv(..., resolution='1m')
 - Tested symbols: FPT
 - Returned rows: 5
-- Latency: 195.63 ms
+- Latency: 228.14 ms
 - Earliest timestamp: 2026-07-03T14:26:00
 - Latest timestamp: 2026-07-03T14:40:00
 - Timezone: naive/unspecified
@@ -70,13 +70,14 @@
 - Method or endpoint: Market().equity('VCB').quote()
 - Tested symbols: VCB
 - Returned rows: 1
-- Latency: 133.5 ms
-- Earliest timestamp: 1970-01-01T00:29:43.067546136
-- Latest timestamp: 1970-01-01T00:29:43.067546136
-- Timezone: naive/unspecified
+- Latency: 142.9 ms
+- Earliest timestamp: not available
+- Latest timestamp: not available
+- Timezone: provider-specific/unparsed
 - Error category: NONE
 - Schema: symbol: object, time: int64, exchange: object, ceiling_price: int64, floor_price: int64, reference_price: int64, open_price: int64, high_price: int64, low_price: int64, close_price: int64, average_price: int64, volume_accumulated: int64, total_value: int64, price_change: int64, percent_change: float64, bid_price_1: object, bid_vol_1: int64, bid_price_2: int64, bid_vol_2: int64, bid_price_3: int64, bid_vol_3: int64, ask_price_1: object, ask_vol_1: int64, ask_price_2: int64, ask_vol_2: int64, ask_price_3: int64, ask_vol_3: int64, foreign_buy_volume: int64, foreign_sell_volume: int64, foreign_room: int64
-- Evidence: Live request completed in the local environment.
+- Data quality findings: Timestamp column 'time' was preserved as provider-specific raw values.
+- Evidence: Live request completed in the local environment.; Quote time field was observed as provider-specific raw data; official docs did not verify unit semantics, so it was not parsed into a timestamp.
 
 ### batch price board
 
@@ -84,14 +85,14 @@
 - Method or endpoint: Market().quote(['VCB', 'HPG', 'FPT'])
 - Tested symbols: VCB, HPG, FPT
 - Returned rows: 3
-- Latency: 107.95 ms
-- Earliest timestamp: 1970-01-01T00:29:43.067546136
-- Latest timestamp: 1970-01-01T00:29:43.067591754
-- Timezone: naive/unspecified
+- Latency: 154.58 ms
+- Earliest timestamp: not available
+- Latest timestamp: not available
+- Timezone: provider-specific/unparsed
 - Error category: NONE
 - Schema: symbol: object, time: int64, exchange: object, ceiling_price: int64, floor_price: int64, reference_price: int64, open_price: int64, high_price: int64, low_price: int64, close_price: int64, average_price: int64, volume_accumulated: int64, total_value: int64, price_change: int64, percent_change: float64, bid_price_1: object, bid_vol_1: int64, bid_price_2: int64, bid_vol_2: int64, bid_price_3: int64, bid_vol_3: int64, ask_price_1: object, ask_vol_1: int64, ask_price_2: int64, ask_vol_2: int64, ask_price_3: int64, ask_vol_3: int64, foreign_buy_volume: int64, foreign_sell_volume: int64, foreign_room: int64
-- Data quality findings: Timestamps in 'time' are not sorted ascending.
-- Evidence: Live request completed in the local environment.
+- Data quality findings: Timestamp column 'time' was preserved as provider-specific raw values.
+- Evidence: Live request completed in the local environment.; Quote time field was observed as provider-specific raw data; official docs did not verify unit semantics, so it was not parsed into a timestamp.
 
 ### symbol metadata
 
@@ -112,7 +113,7 @@
 - Method or endpoint: Reference().equity.list_by_exchange()
 - Tested symbols: HOSE
 - Returned rows: 3303
-- Latency: 342.14 ms
+- Latency: 299.66 ms
 - Earliest timestamp: not available
 - Latest timestamp: not available
 - Timezone: not available
@@ -140,7 +141,7 @@
 - Method or endpoint: Reference().company('FPT').events()
 - Tested symbols: FPT
 - Returned rows: 0
-- Latency: 155.14 ms
+- Latency: 127.74 ms
 - Earliest timestamp: not available
 - Latest timestamp: not available
 - Timezone: not available
@@ -233,11 +234,12 @@ Schema and timestamp findings are listed per capability above. Live schema valid
 
 ## Latency Observations
 
-No latency observations are available unless a live audit has been executed.
+Latency observations are listed per capability above.
 
 ## Data-Quality Problems
 
-- batch price board: Timestamps in 'time' are not sorted ascending.
+- latest quote: Timestamp column 'time' was preserved as provider-specific raw values.
+- batch price board: Timestamp column 'time' was preserved as provider-specific raw values.
 - current exchange universe: No recognized timestamp column was present.; Null values detected in columns: organ_name, en_organ_name, exchange.
 - corporate actions: Response contained no rows.
 
@@ -250,10 +252,10 @@ No latency observations are available unless a live audit has been executed.
 
 ## Unresolved Uncertainties
 
-- No live API-key-backed requests were completed in this Phase 0 run.
 - Historical point-in-time universe membership was not verified.
 - Adjusted-price methodology and corporate-action completeness were not verified.
-- Free-tier minute lookback, pagination behavior, and delay characteristics were not verified.
+- Free-tier minute lookback, pagination behavior, and delay characteristics were not fully verified.
+- Quote provider time unit semantics were not verified in official documentation.
 - WebSocket entitlement for the free tier was not found in the free-package docs inspected.
 
 ## Blocking Issues

@@ -39,6 +39,8 @@ temp/
 data/raw/**
 data/normalized/**
 data/cache/**
+data/manifests/**
+reports/data_quality/**
 *.sqlite
 *.sqlite3
 *.db
@@ -47,3 +49,5 @@ data/cache/**
 !data/raw/.gitkeep
 !data/normalized/.gitkeep
 !data/cache/.gitkeep
+!data/manifests/.gitkeep
+!reports/data_quality/.gitkeep

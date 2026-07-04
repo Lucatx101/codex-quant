@@ -38,6 +38,31 @@ class ErrorCategory(StrEnum):
     UNKNOWN = "UNKNOWN"
 
 
+class ValidationSeverity(StrEnum):
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+
+
+class ProviderTimeParseStatus(StrEnum):
+    PARSED = "parsed"
+    MISSING = "missing"
+    INVALID = "invalid"
+    PROVIDER_SPECIFIC_UNPARSED = "provider_specific_unparsed"
+
+
+class VolumeSemantics(StrEnum):
+    PER_BAR = "per_bar"
+    CUMULATIVE = "cumulative"
+    UNKNOWN = "unknown"
+
+
+class BarStatus(StrEnum):
+    COMPLETE = "complete"
+    FORMING = "forming"
+    UNKNOWN = "unknown"
+
+
 class PackageInspection(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -112,6 +137,61 @@ class AuditReport(BaseModel):
         for capability in self.capabilities:
             counts[capability.status.value] += 1
         return counts
+
+
+class UniverseDiagnostics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total_returned_rows: int = 0
+    hose_rows: int = 0
+    null_exchange_rows: int = 0
+    rows_by_security_type: dict[str, int] = Field(default_factory=dict)
+    duplicate_symbols: int = 0
+
+
+class ValidationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    dataset_name: str
+    severity: ValidationSeverity
+    check_name: str
+    message: str
+    affected_columns: list[str] = Field(default_factory=list)
+    affected_row_count: int = 0
+    sample_affected_keys: list[str] = Field(default_factory=list)
+    blocks_output: bool = False
+
+
+class DatasetManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    command: str
+    provider: str = "vnstock"
+    symbols: list[str] = Field(default_factory=list)
+    exchange: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    resolution: str | None = None
+    started_at_utc: datetime
+    finished_at_utc: datetime
+    status: str
+    row_counts: dict[str, int] = Field(default_factory=dict)
+    output_paths: list[str] = Field(default_factory=list)
+    validation_summary: dict[str, int] = Field(default_factory=dict)
+    error_summary: list[str] = Field(default_factory=list)
+    package_versions: dict[str, str] = Field(default_factory=dict)
+    git_commit_hash: str | None = None
+    provider_call_count: int = 0
+    dry_run: bool = False
+
+
+class WorkflowResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    manifest: DatasetManifest
+    validation_results: list[ValidationResult] = Field(default_factory=list)
+    manifest_path: str | None = None
 
 
 def result_from_frame(

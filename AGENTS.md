@@ -9,7 +9,8 @@
 - Keep tests offline by default; live audits must be explicit.
 - Update tests when behavior changes.
 - Update documentation when architecture, commands, or verified capabilities change.
-- Do not implement strategy, backtesting, ML, live trading, portfolio construction, or web UI work during Phase 0.
+- Do not implement strategy, backtesting, ML, live trading, portfolio construction, or web UI work unless the active phase explicitly requests it.
+- Keep generated raw data, normalized Parquet, manifests, and data-quality reports out of Git unless a later prompt explicitly asks for a sanitized sample.
 - Run `make check` before committing.
 - Do not commit failed experiments.
 - Stop and report when a required provider capability cannot be verified.

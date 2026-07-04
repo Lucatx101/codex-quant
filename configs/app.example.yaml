@@ -4,4 +4,6 @@ data_dir: data
 report_dir: reports
 request_timeout_seconds: 10
 max_retry_attempts: 2
+provider_sleep_seconds: 0
+max_quote_symbols: 20
 provider: vnstock
