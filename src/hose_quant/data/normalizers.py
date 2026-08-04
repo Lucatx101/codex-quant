@@ -9,10 +9,12 @@ import pandas as pd
 from hose_quant.data.market_time import timestamp_provenance
 from hose_quant.data.models import (
     BarStatus,
+    DailyUnitProvenance,
     ProviderTimeParseStatus,
     UniverseDiagnostics,
     VolumeSemantics,
 )
+from hose_quant.data.unit_provenance import daily_provenance_columns
 
 PROVIDER = "vnstock"
 QUOTE_PRICE_COLUMNS = [
@@ -118,7 +120,14 @@ def normalize_daily_ohlcv(
     symbol: str,
     exchange: str | None = None,
     ingestion_timestamp_utc: datetime | None = None,
+    unit_provenance: DailyUnitProvenance | None = None,
 ) -> pd.DataFrame:
+    if unit_provenance is not None and (
+        unit_provenance.provider != PROVIDER or unit_provenance.source_resolution != "1D"
+    ):
+        raise ValueError(
+            "Daily unit provenance must match the vnstock provider and 1D source resolution."
+        )
     ingestion_timestamp_utc = ingestion_timestamp_utc or utc_now()
     frame = raw.copy()
     parsed = pd.to_datetime(_column(frame, "time"), errors="coerce")
@@ -138,6 +147,8 @@ def normalize_daily_ohlcv(
             "ingestion_timestamp_utc": ingestion_timestamp_utc,
         }
     )
+    for column, value in daily_provenance_columns(unit_provenance).items():
+        normalized[column] = value
     _as_numeric(normalized, ["open", "high", "low", "close", "volume"])
     return normalized.sort_values(["symbol", "date"]).reset_index(drop=True)
 

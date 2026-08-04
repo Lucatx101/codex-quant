@@ -18,10 +18,15 @@ from hose_quant.data.models import (
     ProviderTimeParseStatus,
     TimestampAwarenessStatus,
     TradedValueUnit,
+    UnitProvenanceStatus,
     UnitVerificationStatus,
     UniverseDiagnostics,
     ValidationResult,
     ValidationSeverity,
+)
+from hose_quant.data.unit_provenance import (
+    effective_unit_metadata,
+    resolve_daily_unit_policy,
 )
 
 
@@ -298,6 +303,21 @@ def validate_daily_ohlcv(frame: pd.DataFrame) -> list[ValidationResult]:
                 blocks_output=True,
             )
         )
+    unit_policy = resolve_daily_unit_policy(frame)
+    results.append(
+        _result(
+            dataset_name=dataset_name,
+            severity=(
+                ValidationSeverity.INFO
+                if unit_policy.verification_status is UnitVerificationStatus.VERIFIED
+                else ValidationSeverity.WARNING
+            ),
+            check_name="daily_unit_provenance",
+            message=unit_policy.verification_reason,
+            affected_columns=["provider", "source_resolution"],
+            affected_row_count=len(frame),
+        )
+    )
     return results
 
 
@@ -578,6 +598,7 @@ def validate_daily_panel(
     )
     if results:
         return results
+    results.extend(_validate_effective_unit_metadata(frame, dataset_name=dataset_name))
     if len(frame) != expected_source_row_count:
         results.append(
             _result(
@@ -738,8 +759,13 @@ def validate_liquidity_characterization(frame: pd.DataFrame) -> list[ValidationR
     unverified = (
         frame["unit_verification_status"].astype("string") != UnitVerificationStatus.VERIFIED.value
     )
+    provenance_unverified = (
+        frame["unit_provenance_status"].astype("string")
+        != UnitProvenanceStatus.VERIFIED.value
+    )
+    vnd_permitted = frame["vnd_traded_value_permitted"].fillna(False).astype(bool)
     monetary_value = pd.to_numeric(frame["average_traded_value_vnd"], errors="coerce").notna()
-    false_monetary = unverified & monetary_value
+    false_monetary = (unverified | provenance_unverified | ~vnd_permitted) & monetary_value
     if false_monetary.any():
         results.append(
             _result(
@@ -748,10 +774,29 @@ def validate_liquidity_characterization(frame: pd.DataFrame) -> list[ValidationR
                 check_name="monetary_units_verified",
                 message="Unverified units cannot produce average_traded_value_vnd.",
                 affected_columns=[
+                    "unit_provenance_status",
                     "unit_verification_status",
+                    "vnd_traded_value_permitted",
                     "average_traded_value_vnd",
                 ],
                 affected_row_count=int(false_monetary.sum()),
+                blocks_output=True,
+            )
+        )
+    invalid_permission = vnd_permitted & (unverified | provenance_unverified)
+    if invalid_permission.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="vnd_permission_requires_verified_provenance",
+                message="VND permission requires verified registered dataset provenance.",
+                affected_columns=[
+                    "unit_provenance_status",
+                    "unit_verification_status",
+                    "vnd_traded_value_permitted",
+                ],
+                affected_row_count=int(invalid_permission.sum()),
                 blocks_output=True,
             )
         )
@@ -770,7 +815,61 @@ def validate_liquidity_characterization(frame: pd.DataFrame) -> list[ValidationR
                 blocks_output=True,
             )
         )
+    monetary_claim = (
+        (~unverified)
+        | vnd_permitted
+        | monetary_value
+        | (frame["traded_value_unit"].astype("string") == TradedValueUnit.VND.value)
+    )
+    if monetary_claim.any():
+        results.extend(
+            _validate_effective_unit_metadata(
+                frame.loc[monetary_claim].copy(),
+                dataset_name=dataset_name,
+            )
+        )
     return results
+
+
+def _validate_effective_unit_metadata(
+    frame: pd.DataFrame,
+    *,
+    dataset_name: str,
+) -> list[ValidationResult]:
+    policy = resolve_daily_unit_policy(frame)
+    expected_metadata = effective_unit_metadata(policy)
+    mismatch = pd.Series(False, index=frame.index)
+    affected_columns: list[str] = []
+    for column, expected in expected_metadata.items():
+        if column not in frame.columns:
+            continue
+        if expected is None or bool(pd.isna(expected)):
+            matches = frame[column].isna()
+        elif isinstance(expected, bool):
+            matches = frame[column].astype("boolean").eq(expected).fillna(False)
+        else:
+            matches = frame[column].astype("string").eq(str(expected)).fillna(False)
+        column_mismatch = ~matches
+        if column_mismatch.any():
+            mismatch |= column_mismatch
+            affected_columns.append(column)
+    if not mismatch.any():
+        return []
+    return [
+        _result(
+            dataset_name=dataset_name,
+            severity=ValidationSeverity.ERROR,
+            check_name="effective_unit_provenance_consistency",
+            message=(
+                "Effective unit metadata does not match the provenance resolved from the "
+                "dataset rows."
+            ),
+            affected_columns=affected_columns,
+            affected_row_count=int(mismatch.sum()),
+            sample_affected_keys=_sample_keys(frame[mismatch], ["symbol", "date"]),
+            blocks_output=True,
+        )
+    ]
 
 
 def validate_availability_diagnostics(frame: pd.DataFrame) -> list[ValidationResult]:

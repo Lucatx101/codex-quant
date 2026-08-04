@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from hose_quant.config import PROJECT_ROOT
-from hose_quant.data.models import DatasetManifest, ValidationResult
+from hose_quant.data.models import DatasetManifest, LiquidityUnitPolicy, ValidationResult
 from hose_quant.data.validators import summarize_validation
 
 
@@ -57,6 +57,7 @@ def build_manifest(
     input_paths: list[Path] | None = None,
     output_paths: list[Path] | None = None,
     parameters: dict[str, Any] | None = None,
+    unit_provenance: LiquidityUnitPolicy | None = None,
     data_contract_versions: dict[str, str] | None = None,
     notes: list[str] | None = None,
     validation_results: list[ValidationResult] | None = None,
@@ -79,6 +80,7 @@ def build_manifest(
         input_paths=[str(path) for path in input_paths or []],
         output_paths=[str(path) for path in output_paths or []],
         parameters=parameters or {},
+        unit_provenance=unit_provenance,
         data_contract_versions=data_contract_versions or {},
         notes=notes or [],
         validation_summary=summarize_validation(validation_results or []),

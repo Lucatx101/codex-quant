@@ -58,4 +58,6 @@ Quote and multi-symbol fetch commands default to a small symbol limit (`MAX_QUOT
 
 The local feature-input layer built on these normalized datasets is documented in
 [feature-input-layer.md](feature-input-layer.md). It does not change the unresolved historical
-membership, adjustment, or corporate-action limitations of this foundation.
+membership, adjustment, or corporate-action limitations of this foundation. Provenance-aware KBS
+daily ingestion now records a versioned unit contract on new normalized rows; legacy Phase 1 files
+remain unchanged and explicitly ineligible for VND liquidity calculations.

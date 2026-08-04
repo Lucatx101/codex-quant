@@ -23,14 +23,15 @@ from hose_quant.data.models import (
     HistoricalMembershipStatus,
     LiquidityScreenConfig,
     LiquidityScreenStatus,
-    LiquidityUnitPolicy,
     MissingDataStatus,
     PriceAdjustmentStatus,
-    PriceUnit,
-    TradedValueUnit,
-    UnitVerificationStatus,
     UniverseCandidateStatus,
-    VolumeUnit,
+)
+from hose_quant.data.unit_provenance import (
+    effective_unit_metadata,
+    ensure_daily_provenance_columns,
+    resolve_daily_unit_policy,
+    unit_provenance_output_metadata,
 )
 
 SYMBOL_PATTERN = r"[A-Z0-9]{1,16}"
@@ -47,49 +48,6 @@ KNOWN_NON_STOCK_TYPES = {
 
 class UnverifiedLiquidityUnitsError(ValueError):
     """Raised when a monetary metric is requested without verified units."""
-
-
-def unverified_unit_policy() -> LiquidityUnitPolicy:
-    return LiquidityUnitPolicy(
-        name="unverified",
-        verification_status=UnitVerificationStatus.UNVERIFIED,
-        price_unit=PriceUnit.UNKNOWN,
-        volume_unit=VolumeUnit.PROVIDER_UNITS,
-        traded_value_unit=TradedValueUnit.UNAVAILABLE,
-        evidence=(
-            "The normalized dataset does not carry enough source-specific unit provenance "
-            "to authorize monetary calculations."
-        ),
-    )
-
-
-def verified_kbs_ohlcv_unit_policy() -> LiquidityUnitPolicy:
-    return LiquidityUnitPolicy(
-        name="verified_kbs_ohlcv",
-        verification_status=UnitVerificationStatus.VERIFIED,
-        price_unit=PriceUnit.THOUSAND_VND,
-        volume_unit=VolumeUnit.SHARES,
-        price_scale_to_vnd=1000.0,
-        volume_scale_to_shares=1.0,
-        traded_value_unit=TradedValueUnit.VND,
-        evidence=(
-            "Explicit KBS OHLCV policy: official Vnstock schema documents decimal equity "
-            "prices and integer traded volume; the 2026-01-31 Vnstock release note states "
-            "KBS history prices are normalized to thousand VND. Apply only when KBS source "
-            "provenance has been independently confirmed for the normalized input."
-        ),
-    )
-
-
-def unit_policy_from_name(name: str) -> LiquidityUnitPolicy:
-    policies = {
-        "unverified": unverified_unit_policy,
-        "verified-kbs-ohlcv": verified_kbs_ohlcv_unit_policy,
-    }
-    try:
-        return policies[name]()
-    except KeyError as exc:
-        raise ValueError(f"Unknown unit policy: {name}.") from exc
 
 
 def prepare_research_universe(
@@ -268,7 +226,6 @@ def build_daily_panel(
     symbols: list[str] | None,
     start: date,
     end: date,
-    unit_policy: LiquidityUnitPolicy,
 ) -> pd.DataFrame:
     if start > end:
         raise ValueError("Daily panel start date must not be after end date.")
@@ -287,7 +244,7 @@ def build_daily_panel(
         "ingestion_timestamp_utc",
     }
     _require_columns(frame, required, dataset="normalized daily")
-    output = frame.copy()
+    output = ensure_daily_provenance_columns(frame)
     output["symbol"] = output["symbol"].map(_normalize_symbol).astype("string")
     output["date"] = pd.to_datetime(output["date"], errors="coerce").dt.normalize()
     selected_symbols = _clean_symbol_list(symbols or [])
@@ -297,6 +254,7 @@ def build_daily_panel(
     end_timestamp = pd.Timestamp(end)
     output = output[output["date"].between(start_timestamp, end_timestamp, inclusive="both")]
     output = output.copy()
+    unit_policy = resolve_daily_unit_policy(output)
 
     for column in ["open", "high", "low", "close", "volume"]:
         output[column] = pd.to_numeric(output[column], errors="coerce")
@@ -316,10 +274,8 @@ def build_daily_panel(
     output["daily_date_semantics"] = "provider_trading_date_unlocalized"
     output["timestamp_status"] = "daily_date_no_intraday_timestamp"
     output["market_timezone_convention"] = TARGET_MARKET_TIMEZONE
-    output["unit_verification_status"] = unit_policy.verification_status.value
-    output["price_unit"] = unit_policy.price_unit.value
-    output["volume_unit"] = unit_policy.volume_unit.value
-    output["traded_value_unit"] = unit_policy.traded_value_unit.value
+    for column, value in effective_unit_metadata(unit_policy).items():
+        output[column] = value
     output["feature_input_contract_version"] = DAILY_PANEL_CONTRACT_VERSION
     output = output.drop(columns=["adjusted_flag", "ingestion_timestamp_utc"], errors="ignore")
 
@@ -338,15 +294,30 @@ def build_daily_panel(
         "price_adjustment_status",
         "source_adjusted_flag",
         "source_resolution",
+        "data_backend",
+        "unit_provenance_schema_version",
+        "source_unit_policy_name",
+        "source_unit_policy_version",
+        "source_price_unit",
+        "source_volume_unit",
+        "source_price_scale_to_vnd",
+        "source_volume_scale_to_shares",
+        "source_unit_evidence_reference",
         "source_ingestion_timestamp_utc",
         "source_dataset",
         "daily_date_semantics",
         "timestamp_status",
         "market_timezone_convention",
+        "unit_provenance_status",
         "unit_verification_status",
+        "unit_policy_name",
+        "unit_policy_version",
         "price_unit",
         "volume_unit",
         "traded_value_unit",
+        "unit_evidence_reference",
+        "unit_verification_reason",
+        "vnd_traded_value_permitted",
     ]
     return output[columns].sort_values(["symbol", "date"], kind="stable").reset_index(drop=True)
 
@@ -357,18 +328,12 @@ def characterize_liquidity(
     symbols: list[str],
     reference_date: date,
     config: LiquidityScreenConfig,
-    unit_policy: LiquidityUnitPolicy,
 ) -> pd.DataFrame:
     required = {"symbol", "date", "close", "volume"}
     _require_columns(daily, required, dataset="daily panel")
     clean_symbols = _clean_symbol_list(symbols)
     if not clean_symbols:
         raise ValueError("At least one symbol is required for liquidity characterization.")
-    if config.min_average_traded_value_vnd is not None and not unit_policy.can_compute_vnd:
-        raise UnverifiedLiquidityUnitsError(
-            "A VND liquidity threshold requires an explicit verified monetary unit policy."
-        )
-
     working = daily.copy()
     working["symbol"] = working["symbol"].map(_normalize_symbol).astype("string")
     working["date"] = pd.to_datetime(working["date"], errors="coerce").dt.normalize()
@@ -388,7 +353,15 @@ def characterize_liquidity(
     relevant = relevant[
         relevant["date"].between(window_start, reference_timestamp, inclusive="both")
     ]
+    unit_policy = resolve_daily_unit_policy(relevant)
+    if config.min_average_traded_value_vnd is not None and not unit_policy.can_compute_vnd:
+        raise UnverifiedLiquidityUnitsError(
+            "A VND liquidity threshold requires matching machine-checkable unit provenance in "
+            f"every selected daily row. Effective provenance status is "
+            f"{unit_policy.provenance_status.value}: {unit_policy.verification_reason}"
+        )
     expected_set = set(expected_weekdays)
+    provenance_metadata = unit_provenance_output_metadata(unit_policy)
 
     rows: list[dict[str, Any]] = []
     for symbol in clean_symbols:
@@ -457,12 +430,7 @@ def characterize_liquidity(
                 "missing_data_status": missing_status.value,
                 "screen_status": screen_status.value,
                 "screen_reasons": json.dumps(reasons, separators=(",", ":")),
-                "unit_verification_status": unit_policy.verification_status.value,
-                "price_unit": unit_policy.price_unit.value,
-                "volume_unit": unit_policy.volume_unit.value,
-                "traded_value_unit": unit_policy.traded_value_unit.value,
-                "unit_policy_name": unit_policy.name,
-                "unit_evidence": unit_policy.evidence,
+                **provenance_metadata,
             }
         )
     return pd.DataFrame(rows).sort_values("symbol", kind="stable").reset_index(drop=True)

@@ -91,7 +91,7 @@ python3 -m hose_quant.cli data prepare-universe --snapshot-date 2026-07-04 --wit
 python3 -m hose_quant.cli data build-daily-panel --symbols FPT,HPG,VCB --start 2026-05-04 --end 2026-07-02
 ```
 
-See [docs/feature-input-layer.md](docs/feature-input-layer.md) for contracts, unit policies,
+See [docs/feature-input-layer.md](docs/feature-input-layer.md) for contracts, unit provenance,
 point-in-time limitations, and screening options.
 
 ## Reports
@@ -121,7 +121,9 @@ Work on `main` unless a later phase defines a branch workflow. Before committing
 
 - Free-tier minute polling practicality and full quote batch limits are not yet proven.
 - Historical point-in-time universe membership, delisting state, adjusted-price methodology, and corporate-action completeness are not yet verified.
-- Liquidity traded value is unavailable by default because legacy normalized daily data does not retain source-specific unit provenance.
+- Legacy normalized daily data remains non-monetary because it lacks source-specific unit
+  provenance. New KBS daily rows can enable VND traded value only when every selected row carries
+  the matching registered, versioned provenance record; no CLI flag can assert verification.
 - Quote provider `time` values are preserved as raw provider-specific values unless documentation verifies timestamp semantics.
 
 ## Future Browser Interface

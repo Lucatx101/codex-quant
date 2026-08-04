@@ -11,6 +11,8 @@ The layer extends the existing data architecture instead of creating a second pi
 - `contracts.py` defines versioned universe, daily-panel, liquidity, availability, and
   market-time contracts.
 - `feature_inputs.py` contains deterministic DataFrame transformations and report rendering.
+- `unit_provenance.py` owns the versioned daily-unit registry and derives effective monetary
+  permission from selected dataset rows.
 - `market_time.py` defines HOSE time conventions and preserves timestamp provenance.
 - `validators.py` enforces contract invariants and returns existing structured validation models.
 - `workflows.py`, `storage.py`, and `manifests.py` provide local I/O and provenance through the
@@ -96,20 +98,48 @@ Screening thresholds are configurable through CLI options or these environment s
 - `LIQUIDITY_MIN_AVERAGE_VOLUME`
 - `LIQUIDITY_MIN_AVERAGE_TRADED_VALUE_VND`
 
-The default unit policy is `unverified`. Under it, average volume is explicitly measured in
-provider units and `average_traded_value_vnd` remains null. A VND threshold raises an error.
+Unit policy is not a user-selectable setting. The CLI has no `--unit-policy` option. For every
+selected set of daily rows, the resolver reads the dataset metadata and requires one identical,
+complete provenance record that exactly matches a registered contract. The current eligible
+record is:
 
-The opt-in `verified-kbs-ohlcv` policy scales price by 1,000 and volume by 1 to calculate VND.
-It may be selected only after independently confirming that the input came from KBS OHLCV.
-Phase 1 normalized files record `provider=vnstock` but not `source=kbs`, so the CLI never selects
-this policy automatically. Evidence is based on the official [Vnstock Market schema](https://vnstocks.com/docs/vnstock-data/cau-truc-du-lieu/market), which shows decimal OHLCV price and integer traded volume, and the official [Vnstock release history](https://vnstocks.com/docs/vnstock-insider-api/lich-su-phien-ban), which states that KBS history prices are normalized to thousand VND.
+- provenance schema `daily-unit-provenance-v1`;
+- `provider=vnstock`, `data_backend=kbs`, and `source_resolution=1D`;
+- unit policy `vnstock-kbs-daily-ohlcv`, version `1`;
+- source price unit `thousand_vnd` with VND scale `1000`;
+- source volume unit `shares` with share scale `1`;
+- evidence reference `vnstock-kbs-ohlcv-units@2026-01-31`.
+
+The provider adapter uses the same KBS backend identifier for the official OHLCV call and passes
+that registered record to the normalizer. The normalizer writes the version, backend, declared
+units, scales, and evidence reference into each new normalized row. The feature layer then checks
+the complete record instead of trusting a CLI flag, filename, configuration value, or prose.
+This implements the chain `provider call -> normalized provenance -> verified interpretation ->
+monetary calculation`.
+
+The unit interpretation is grounded in the official
+[Vnstock Market schema](https://vnstocks.com/docs/vnstock-data/cau-truc-du-lieu/market), which shows
+decimal OHLCV price and integer traded volume, and the official
+[Vnstock release history](https://vnstocks.com/docs/vnstock-insider-api/lich-su-phien-ban), which
+documents KBS history prices in thousand VND. Those documents support the registered contract,
+but documentation text by itself never verifies a dataset.
+
+Legacy Phase 1 files have no source-specific provenance. They remain usable for daily panels,
+availability diagnostics, average provider volume, trading frequency, and zero-volume frequency.
+Their status is `legacy_missing` and unverified, `average_traded_value_vnd` remains null, and a VND
+threshold fails with a remediation message. Incomplete, mixed, or incompatible records are also
+unverified. Existing files are never rewritten and no live call is made to repair provenance.
+Re-ingest through the provenance-aware daily provider workflow to produce a future dataset that
+can qualify for verified VND calculations.
 
 ## Daily Panel
 
-The `daily-panel-v1` contract requires provider, symbol, exchange, date, OHLCV, source resolution,
-ingestion provenance, observation status, adjustment status, date/timestamp semantics, timezone
-convention, and unit status. It enforces deterministic ordering, unique `symbol,date` keys,
-nonnegative and integer-like volume, and valid OHLC relationships.
+The `daily-panel-v2` contract requires provider, data backend, symbol, exchange, date, OHLCV,
+source resolution, ingestion provenance, source unit-provenance fields, effective policy
+name/version, provenance and verification statuses, verification reason, evidence reference, and
+the explicit `vnd_traded_value_permitted` boolean. It enforces deterministic ordering, unique
+`symbol,date` keys, nonnegative and integer-like volume, valid OHLC relationships, and agreement
+between effective unit metadata and the provenance resolved from the rows.
 
 The panel contains observed provider rows only. It does not create a rectangular symbol/date grid,
 forward-fill values, synthesize market bars, or construct adjusted prices. Missing source values
@@ -153,9 +183,12 @@ reports/feature_inputs/*-availability.md
 data/manifests/<run_id>.json
 ```
 
-Manifests now include input paths, output paths, parameters, contract versions, package/Git
-provenance, row counts, validation summary, notes, and provider call count. Phase 2 operations set
-provider call count to zero.
+Manifests include input paths, output paths, parameters, contract versions, package/Git provenance,
+row counts, validation summary, notes, and provider call count. Daily backfill and local
+feature-input manifests also carry the effective unit-provenance object: provider/backend,
+provenance status, source record when complete, policy name/version, verification status,
+evidence reference, reason, and VND permission. Phase 2 local operations set provider call count
+to zero.
 
 ## Known Risks
 

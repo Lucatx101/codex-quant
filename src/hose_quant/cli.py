@@ -74,6 +74,14 @@ def build_parser() -> argparse.ArgumentParser:
     prepare = data_subparsers.add_parser(
         "prepare-universe",
         help="Prepare an auditable research universe from a local normalized snapshot.",
+        description=(
+            "Prepare an auditable research universe. Monetary liquidity is enabled only when "
+            "every selected daily row contains matching registered provider/backend provenance."
+        ),
+        epilog=(
+            "Legacy daily files remain usable for panels and non-monetary liquidity metrics, "
+            "but a VND threshold fails until data is re-ingested with versioned provenance."
+        ),
     )
     prepare.add_argument("--exchange", default="HOSE")
     prepare.add_argument(
@@ -96,20 +104,27 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--min-trading-frequency", type=float, default=None)
     prepare.add_argument("--max-zero-volume-frequency", type=float, default=None)
     prepare.add_argument("--min-average-volume", type=float, default=None)
-    prepare.add_argument("--min-average-traded-value-vnd", type=float, default=None)
     prepare.add_argument(
-        "--unit-policy",
-        choices=["unverified", "verified-kbs-ohlcv"],
-        default="unverified",
+        "--min-average-traded-value-vnd",
+        type=float,
+        default=None,
         help=(
-            "Unit interpretation. Monetary metrics require explicit verified-kbs-ohlcv "
-            "source provenance."
+            "Minimum average traded value in VND. Requires matching machine-checkable unit "
+            "provenance in the selected normalized daily rows."
         ),
     )
 
     panel = data_subparsers.add_parser(
         "build-daily-panel",
         help="Build a validated long-form daily panel and availability diagnostics locally.",
+        description=(
+            "Build a local daily panel. Unit verification is derived from stored daily-row "
+            "provider/backend provenance and cannot be selected from the CLI."
+        ),
+        epilog=(
+            "Legacy files without versioned provenance are preserved with unverified units; "
+            "their OHLCV values remain available for non-monetary analysis."
+        ),
     )
     panel.add_argument(
         "--symbols",
@@ -118,11 +133,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     panel.add_argument("--start", required=True, help="Start date as YYYY-MM-DD.")
     panel.add_argument("--end", required=True, help="End date as YYYY-MM-DD.")
-    panel.add_argument(
-        "--unit-policy",
-        choices=["unverified", "verified-kbs-ohlcv"],
-        default="unverified",
-    )
     return parser
 
 
@@ -223,14 +233,12 @@ def _run_data_command(args: argparse.Namespace, settings: AppSettings) -> int:
                 with_liquidity=args.with_liquidity,
                 liquidity_reference_date=_parse_optional_date(args.liquidity_reference_date),
                 liquidity_config=_liquidity_config(args, settings),
-                unit_policy_name=args.unit_policy,
             )
         elif args.data_command == "build-daily-panel":
             result = workflow.build_daily_panel(
                 symbols=_split_symbols(args.symbols) if args.symbols else None,
                 start=_parse_date(args.start),
                 end=_parse_date(args.end),
-                unit_policy_name=args.unit_policy,
             )
         else:
             raise ValueError(f"Unknown data command: {args.data_command}")

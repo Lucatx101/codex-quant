@@ -19,10 +19,15 @@ from hose_quant.data.models import (
     AuditReport,
     CapabilityResult,
     CapabilityStatus,
+    DailyUnitProvenance,
     ErrorCategory,
     FrameInspection,
     PackageInspection,
     result_from_frame,
+)
+from hose_quant.data.unit_provenance import (
+    VNSTOCK_KBS_DAILY_UNIT_PROVENANCE,
+    VNSTOCK_KBS_DATA_BACKEND,
 )
 from hose_quant.logging import redact_value
 
@@ -735,12 +740,15 @@ class VnstockDataProvider:
                 end=end.isoformat(),
                 resolution="1D",
                 count=1000,
-                source="kbs",
+                source=VNSTOCK_KBS_DATA_BACKEND,
             )
         )
         if not isinstance(frame, pd.DataFrame):
             return pd.DataFrame(frame)
         return frame
+
+    def daily_unit_provenance(self) -> DailyUnitProvenance:
+        return VNSTOCK_KBS_DAILY_UNIT_PROVENANCE
 
     def fetch_intraday_bars(
         self,

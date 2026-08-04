@@ -7,8 +7,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from hose_quant.data.market_time import MARKET_TIME_POLICY_VERSION
 
 UNIVERSE_CONTRACT_VERSION = "research-universe-v1"
-DAILY_PANEL_CONTRACT_VERSION = "daily-panel-v1"
-LIQUIDITY_CONTRACT_VERSION = "liquidity-characterization-v1"
+DAILY_PANEL_CONTRACT_VERSION = "daily-panel-v2"
+LIQUIDITY_CONTRACT_VERSION = "liquidity-characterization-v2"
 AVAILABILITY_CONTRACT_VERSION = "daily-availability-v1"
 
 
@@ -78,15 +78,30 @@ DAILY_PANEL_CONTRACT = DataContract(
         "price_adjustment_status",
         "source_adjusted_flag",
         "source_resolution",
+        "data_backend",
+        "unit_provenance_schema_version",
+        "source_unit_policy_name",
+        "source_unit_policy_version",
+        "source_price_unit",
+        "source_volume_unit",
+        "source_price_scale_to_vnd",
+        "source_volume_scale_to_shares",
+        "source_unit_evidence_reference",
         "source_ingestion_timestamp_utc",
         "source_dataset",
         "daily_date_semantics",
         "timestamp_status",
         "market_timezone_convention",
+        "unit_provenance_status",
         "unit_verification_status",
+        "unit_policy_name",
+        "unit_policy_version",
         "price_unit",
         "volume_unit",
         "traded_value_unit",
+        "unit_evidence_reference",
+        "unit_verification_reason",
+        "vnd_traded_value_permitted",
     ],
     nullable_columns=[
         "exchange",
@@ -96,6 +111,16 @@ DAILY_PANEL_CONTRACT = DataContract(
         "close",
         "volume",
         "source_adjusted_flag",
+        "data_backend",
+        "unit_provenance_schema_version",
+        "source_unit_policy_name",
+        "source_unit_policy_version",
+        "source_price_unit",
+        "source_volume_unit",
+        "source_price_scale_to_vnd",
+        "source_volume_scale_to_shares",
+        "source_unit_evidence_reference",
+        "unit_evidence_reference",
     ],
     semantics={
         "missingness": "Observed rows only; no bars are synthesized or forward-filled.",
@@ -112,6 +137,17 @@ LIQUIDITY_CONTRACT = DataContract(
     ordering=["symbol"],
     required_columns=[
         "feature_input_contract_version",
+        "provider",
+        "data_backend",
+        "source_resolution",
+        "unit_provenance_schema_version",
+        "source_unit_policy_name",
+        "source_unit_policy_version",
+        "source_price_unit",
+        "source_volume_unit",
+        "source_price_scale_to_vnd",
+        "source_volume_scale_to_shares",
+        "source_unit_evidence_reference",
         "symbol",
         "reference_date",
         "window_start_date",
@@ -128,25 +164,44 @@ LIQUIDITY_CONTRACT = DataContract(
         "missing_data_status",
         "screen_status",
         "screen_reasons",
+        "unit_provenance_status",
         "unit_verification_status",
         "price_unit",
         "volume_unit",
         "traded_value_unit",
         "unit_policy_name",
-        "unit_evidence",
+        "unit_policy_version",
+        "unit_evidence_reference",
+        "unit_verification_reason",
+        "vnd_traded_value_permitted",
     ],
     nullable_columns=[
+        "provider",
+        "source_resolution",
         "trading_frequency",
         "zero_volume_frequency",
         "average_volume_provider_units",
         "average_traded_value_vnd",
         "recent_valid_close",
         "recent_valid_close_date",
+        "data_backend",
+        "unit_provenance_schema_version",
+        "source_unit_policy_name",
+        "source_unit_policy_version",
+        "source_price_unit",
+        "source_volume_unit",
+        "source_price_scale_to_vnd",
+        "source_volume_scale_to_shares",
+        "source_unit_evidence_reference",
+        "unit_evidence_reference",
     ],
     semantics={
         "causality": "Uses only observations on or before reference_date.",
         "window": "Trailing expected weekdays; Vietnam holidays are not removed.",
-        "money": "VND traded value exists only under an explicit verified unit policy.",
+        "money": (
+            "VND traded value exists only when selected input rows carry one matching, "
+            "registered provider/backend unit-provenance record."
+        ),
     },
 )
 

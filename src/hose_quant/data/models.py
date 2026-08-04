@@ -84,6 +84,15 @@ class UnitVerificationStatus(StrEnum):
     VERIFIED = "verified"
 
 
+class UnitProvenanceStatus(StrEnum):
+    VERIFIED = "verified"
+    LEGACY_MISSING = "legacy_missing"
+    INCOMPLETE = "incomplete"
+    AMBIGUOUS = "ambiguous"
+    INCOMPATIBLE = "incompatible"
+    NO_DATA = "no_data"
+
+
 class PriceUnit(StrEnum):
     UNKNOWN = "unknown"
     VND = "vnd"
@@ -121,22 +130,48 @@ class TimestampAwarenessStatus(StrEnum):
     MISSING = "missing"
 
 
+class DailyUnitProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: str
+    provider: str
+    data_backend: str
+    source_resolution: str
+    unit_policy_name: str
+    unit_policy_version: str
+    price_unit: PriceUnit
+    volume_unit: VolumeUnit
+    price_scale_to_vnd: float = Field(gt=0)
+    volume_scale_to_shares: float = Field(gt=0)
+    evidence_reference: str
+
+
 class LiquidityUnitPolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str
+    version: str
+    provenance_status: UnitProvenanceStatus
     verification_status: UnitVerificationStatus
+    provider: str | None = None
+    data_backend: str | None = None
+    source_resolution: str | None = None
+    source_provenance: DailyUnitProvenance | None = None
     price_unit: PriceUnit
     volume_unit: VolumeUnit
     price_scale_to_vnd: float | None = Field(default=None, gt=0)
     volume_scale_to_shares: float | None = Field(default=None, gt=0)
     traded_value_unit: TradedValueUnit = TradedValueUnit.UNAVAILABLE
-    evidence: str
+    evidence_reference: str | None = None
+    verification_reason: str
+    vnd_traded_value_permitted: bool = False
 
     @model_validator(mode="after")
     def validate_monetary_policy(self) -> LiquidityUnitPolicy:
         can_compute = (
-            self.verification_status is UnitVerificationStatus.VERIFIED
+            self.provenance_status is UnitProvenanceStatus.VERIFIED
+            and self.verification_status is UnitVerificationStatus.VERIFIED
+            and self.source_provenance is not None
             and self.price_scale_to_vnd is not None
             and self.volume_scale_to_shares is not None
         )
@@ -146,11 +181,15 @@ class LiquidityUnitPolicy(BaseModel):
             )
         if can_compute and self.traded_value_unit is not TradedValueUnit.VND:
             raise ValueError("A fully verified monetary policy must expose traded value as VND.")
+        if self.vnd_traded_value_permitted != can_compute:
+            raise ValueError(
+                "VND permission must exactly match verified dataset provenance and unit scales."
+            )
         return self
 
     @property
     def can_compute_vnd(self) -> bool:
-        return self.traded_value_unit is TradedValueUnit.VND
+        return self.vnd_traded_value_permitted
 
 
 class LiquidityScreenConfig(BaseModel):
@@ -299,6 +338,7 @@ class DatasetManifest(BaseModel):
     input_paths: list[str] = Field(default_factory=list)
     output_paths: list[str] = Field(default_factory=list)
     parameters: dict[str, Any] = Field(default_factory=dict)
+    unit_provenance: LiquidityUnitPolicy | None = None
     data_contract_versions: dict[str, str] = Field(default_factory=dict)
     notes: list[str] = Field(default_factory=list)
     validation_summary: dict[str, int] = Field(default_factory=dict)

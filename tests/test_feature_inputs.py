@@ -16,8 +16,6 @@ from hose_quant.data.feature_inputs import (
     characterize_liquidity,
     daily_availability_diagnostics,
     prepare_research_universe,
-    unverified_unit_policy,
-    verified_kbs_ohlcv_unit_policy,
 )
 from hose_quant.data.market_time import market_time_policy, timestamp_provenance
 from hose_quant.data.models import (
@@ -25,11 +23,16 @@ from hose_quant.data.models import (
     LiquidityScreenConfig,
     LiquidityScreenStatus,
     TimestampAwarenessStatus,
+    UnitProvenanceStatus,
     UnitVerificationStatus,
     UniverseCandidateStatus,
 )
 from hose_quant.data.normalizers import normalize_daily_ohlcv, normalize_intraday_bars
 from hose_quant.data.storage import DataStorage
+from hose_quant.data.unit_provenance import (
+    SOURCE_SPECIFIC_PROVENANCE_COLUMNS,
+    VNSTOCK_KBS_DAILY_UNIT_PROVENANCE,
+)
 from hose_quant.data.validators import (
     has_blocking_errors,
     validate_availability_diagnostics,
@@ -42,13 +45,23 @@ from hose_quant.data.validators import (
 FIXED_NOW = datetime(2026, 7, 4, 2, 0, tzinfo=UTC)
 
 
-def _daily_frame(symbol: str, rows: list[dict[str, object]]) -> pd.DataFrame:
+def _daily_frame(
+    symbol: str,
+    rows: list[dict[str, object]],
+    *,
+    verified_kbs: bool = False,
+) -> pd.DataFrame:
     return normalize_daily_ohlcv(
         pd.DataFrame(rows),
         symbol=symbol,
         exchange="HOSE",
         ingestion_timestamp_utc=FIXED_NOW,
+        unit_provenance=(VNSTOCK_KBS_DAILY_UNIT_PROVENANCE if verified_kbs else None),
     )
+
+
+def _legacy_daily_frame(symbol: str, rows: list[dict[str, object]]) -> pd.DataFrame:
+    return _daily_frame(symbol, rows).drop(columns=list(SOURCE_SPECIFIC_PROVENANCE_COLUMNS))
 
 
 def _valid_daily_rows() -> list[dict[str, object]]:
@@ -181,7 +194,6 @@ def test_daily_panel_is_long_form_sorted_and_never_forward_fills() -> None:
         symbols=["FPT"],
         start=date(2026, 7, 1),
         end=date(2026, 7, 3),
-        unit_policy=unverified_unit_policy(),
     )
 
     assert panel["date"].dt.strftime("%Y-%m-%d").tolist() == ["2026-07-01", "2026-07-03"]
@@ -189,7 +201,11 @@ def test_daily_panel_is_long_form_sorted_and_never_forward_fills() -> None:
     assert set(panel["observation_status"]) == {"observed_provider_bar"}
     assert set(panel["price_adjustment_status"]) == {"unknown"}
     assert set(panel["unit_verification_status"]) == {UnitVerificationStatus.UNVERIFIED.value}
+    assert set(panel["unit_provenance_status"]) == {
+        UnitProvenanceStatus.LEGACY_MISSING.value
+    }
     assert set(panel["traded_value_unit"]) == {"unavailable"}
+    assert not panel["vnd_traded_value_permitted"].any()
     results = validate_daily_panel(panel, expected_source_row_count=2)
     assert not has_blocking_errors(results)
     assert any(result.check_name == "price_adjustment_unknown" for result in results)
@@ -208,7 +224,6 @@ def test_daily_panel_validator_blocks_duplicate_keys_and_invalid_ohlc() -> None:
         symbols=["FPT"],
         start=date(2026, 7, 1),
         end=date(2026, 7, 1),
-        unit_policy=unverified_unit_policy(),
     )
     results = validate_daily_panel(panel, expected_source_row_count=2)
     checks = {result.check_name for result in results}
@@ -242,10 +257,10 @@ def test_availability_diagnostics_show_missing_zero_volume_and_absence() -> None
     assert not has_blocking_errors(validate_availability_diagnostics(diagnostics))
 
 
-def test_liquidity_is_backward_looking_parameterized_and_preserves_unit_uncertainty() -> None:
+def test_legacy_liquidity_is_backward_looking_and_preserves_unit_uncertainty() -> None:
     daily = pd.concat(
         [
-            _daily_frame(
+            _legacy_daily_frame(
                 "FPT",
                 _valid_daily_rows()
                 + [
@@ -259,7 +274,7 @@ def test_liquidity_is_backward_looking_parameterized_and_preserves_unit_uncertai
                     }
                 ],
             ),
-            _daily_frame("HPG", _valid_daily_rows()[:2]),
+            _legacy_daily_frame("HPG", _valid_daily_rows()[:2]),
         ],
         ignore_index=True,
     )
@@ -275,7 +290,6 @@ def test_liquidity_is_backward_looking_parameterized_and_preserves_unit_uncertai
         symbols=["FPT", "HPG", "VCB"],
         reference_date=date(2026, 7, 3),
         config=config,
-        unit_policy=unverified_unit_policy(),
     )
     fpt = result[result["symbol"] == "FPT"].iloc[0]
     assert fpt["observed_date_count"] == 5
@@ -283,6 +297,7 @@ def test_liquidity_is_backward_looking_parameterized_and_preserves_unit_uncertai
     assert fpt["zero_volume_frequency"] == pytest.approx(0.2)
     assert fpt["average_volume_provider_units"] == pytest.approx(80)
     assert pd.isna(fpt["average_traded_value_vnd"])
+    assert fpt["unit_provenance_status"] == UnitProvenanceStatus.LEGACY_MISSING.value
     assert fpt["screen_status"] == LiquidityScreenStatus.FAILED.value
     hpg = result[result["symbol"] == "HPG"].iloc[0]
     assert hpg["screen_status"] == LiquidityScreenStatus.INSUFFICIENT_HISTORY.value
@@ -304,19 +319,107 @@ def test_monetary_liquidity_requires_verified_units_and_uses_explicit_scales() -
             symbols=["FPT"],
             reference_date=date(2026, 7, 3),
             config=monetary_config,
-            unit_policy=unverified_unit_policy(),
         )
 
+    verified_daily = _daily_frame("FPT", _valid_daily_rows(), verified_kbs=True)
     result = characterize_liquidity(
-        daily,
+        verified_daily,
         symbols=["FPT"],
         reference_date=date(2026, 7, 3),
         config=monetary_config,
-        unit_policy=verified_kbs_ohlcv_unit_policy(),
     )
     assert result.loc[0, "average_traded_value_vnd"] == pytest.approx(800_000)
     assert result.loc[0, "screen_status"] == LiquidityScreenStatus.PASSED.value
     assert result.loc[0, "price_unit"] == "thousand_vnd"
+    assert bool(result.loc[0, "vnd_traded_value_permitted"])
+    assert result.loc[0, "data_backend"] == "kbs"
+    assert not has_blocking_errors(validate_liquidity_characterization(result))
+
+
+def test_incompatible_daily_provenance_cannot_enable_vnd_liquidity() -> None:
+    daily = _daily_frame("FPT", _valid_daily_rows(), verified_kbs=True)
+    daily["data_backend"] = "vci"
+    panel = build_daily_panel(
+        daily,
+        symbols=["FPT"],
+        start=date(2026, 6, 29),
+        end=date(2026, 7, 3),
+    )
+
+    assert set(panel["unit_provenance_status"]) == {
+        UnitProvenanceStatus.INCOMPATIBLE.value
+    }
+    assert set(panel["unit_verification_status"]) == {
+        UnitVerificationStatus.UNVERIFIED.value
+    }
+    assert not panel["vnd_traded_value_permitted"].any()
+    with pytest.raises(UnverifiedLiquidityUnitsError, match="incompatible"):
+        characterize_liquidity(
+            panel,
+            symbols=["FPT"],
+            reference_date=date(2026, 7, 3),
+            config=LiquidityScreenConfig(
+                window_weekdays=5,
+                min_history_observations=5,
+                min_average_traded_value_vnd=1,
+            ),
+        )
+
+
+def test_mixed_daily_provenance_remains_ambiguous_and_non_monetary() -> None:
+    mixed = pd.concat(
+        [
+            _daily_frame("FPT", _valid_daily_rows(), verified_kbs=True),
+            _legacy_daily_frame("HPG", _valid_daily_rows()),
+        ],
+        ignore_index=True,
+    )
+    panel = build_daily_panel(
+        mixed,
+        symbols=["FPT", "HPG"],
+        start=date(2026, 6, 29),
+        end=date(2026, 7, 3),
+    )
+
+    assert set(panel["unit_provenance_status"]) == {UnitProvenanceStatus.AMBIGUOUS.value}
+    assert set(panel["unit_verification_status"]) == {
+        UnitVerificationStatus.UNVERIFIED.value
+    }
+    assert not panel["vnd_traded_value_permitted"].any()
+    assert not has_blocking_errors(validate_daily_panel(panel, expected_source_row_count=10))
+
+
+def test_cli_cannot_assert_verified_units_without_dataset_provenance(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        cli.build_parser().parse_args(
+            [
+                "data",
+                "build-daily-panel",
+                "--start",
+                "2026-06-29",
+                "--end",
+                "2026-07-03",
+                "--unit-policy",
+                "verified-kbs-ohlcv",
+            ]
+        )
+
+    assert exc_info.value.code == 2
+    assert "unrecognized arguments: --unit-policy" in capsys.readouterr().err
+
+
+def test_feature_cli_help_explains_provenance_and_legacy_behavior(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as exc_info:
+        cli.build_parser().parse_args(["data", "prepare-universe", "--help"])
+
+    assert exc_info.value.code == 0
+    help_text = capsys.readouterr().out
+    assert "machine-checkable unit provenance" in help_text
+    assert "Legacy daily files remain usable" in help_text
 
 
 def test_market_time_policy_and_timestamp_provenance_do_not_localize_naive_values() -> None:
@@ -368,7 +471,7 @@ def test_local_feature_input_cli_writes_outputs_and_manifest_without_credentials
     )
     storage = DataStorage(settings.data_dir)
     storage.ensure_layout()
-    daily = _daily_frame("FPT", _valid_daily_rows())
+    daily = _legacy_daily_frame("FPT", _valid_daily_rows())
     storage.write_parquet(daily, storage.normalized_daily_path("FPT", "source-run"))
     storage.write_parquet(
         _normalized_universe(),
@@ -411,6 +514,18 @@ def test_local_feature_input_cli_writes_outputs_and_manifest_without_credentials
     payloads = [json.loads(path.read_text()) for path in manifests]
     assert all(payload["provider_call_count"] == 0 for payload in payloads)
     assert all(payload["input_paths"] for payload in payloads)
+    assert all(
+        payload["unit_provenance"]["provenance_status"] == "legacy_missing"
+        for payload in payloads
+    )
+    assert all(
+        payload["unit_provenance"]["verification_status"] == "unverified"
+        for payload in payloads
+    )
+    assert all(
+        not payload["unit_provenance"]["vnd_traded_value_permitted"]
+        for payload in payloads
+    )
 
 
 def test_feature_input_generated_paths_are_ignored_by_git() -> None:

@@ -17,7 +17,6 @@ from hose_quant.data.feature_inputs import (
     characterize_liquidity,
     daily_availability_diagnostics,
     prepare_research_universe,
-    unit_policy_from_name,
     write_availability_report,
 )
 from hose_quant.data.feature_inputs import (
@@ -27,6 +26,7 @@ from hose_quant.data.manifests import build_manifest, create_run_id, write_manif
 from hose_quant.data.market_time import aware_timestamp_to_utc
 from hose_quant.data.models import (
     LiquidityScreenConfig,
+    LiquidityUnitPolicy,
     ValidationResult,
     ValidationSeverity,
     WorkflowResult,
@@ -39,6 +39,7 @@ from hose_quant.data.normalizers import (
     normalize_universe_snapshot,
 )
 from hose_quant.data.storage import DataStorage
+from hose_quant.data.unit_provenance import resolve_daily_unit_policy
 from hose_quant.data.validators import (
     has_blocking_errors,
     validate_availability_diagnostics,
@@ -152,6 +153,7 @@ class DataWorkflow:
                 end_date=end.isoformat(),
             )
         provider = self._require_provider()
+        source_unit_provenance = provider.daily_unit_provenance()
         validation_results: list[ValidationResult] = []
         output_paths = []
         errors: list[str] = []
@@ -163,7 +165,14 @@ class DataWorkflow:
                 raw_with_symbol = raw.copy()
                 raw_with_symbol["symbol"] = symbol
                 raw_frames.append(raw_with_symbol)
-                normalized_frames.append(normalize_daily_ohlcv(raw, symbol=symbol, exchange="HOSE"))
+                normalized_frames.append(
+                    normalize_daily_ohlcv(
+                        raw,
+                        symbol=symbol,
+                        exchange="HOSE",
+                        unit_provenance=source_unit_provenance,
+                    )
+                )
             except Exception as exc:
                 errors.append(f"{symbol}: {sanitize_error(exc)}")
         if raw_frames:
@@ -177,6 +186,7 @@ class DataWorkflow:
             if not has_blocking_errors(validation_results):
                 output_paths.extend(self.storage.write_daily_partitions(normalized_all, run_id))
         status = _status(validation_results, errors)
+        effective_unit_policy = resolve_daily_unit_policy(normalized_all)
         manifest = build_manifest(
             run_id=run_id,
             command="data backfill-daily",
@@ -192,6 +202,7 @@ class DataWorkflow:
                 "normalized": len(normalized_all),
             },
             output_paths=output_paths,
+            unit_provenance=effective_unit_policy,
             validation_results=validation_results,
             error_summary=errors,
             provider_call_count=provider.call_count,
@@ -359,7 +370,6 @@ class DataWorkflow:
         with_liquidity: bool,
         liquidity_reference_date: date | None,
         liquidity_config: LiquidityScreenConfig,
-        unit_policy_name: str,
     ) -> WorkflowResult:
         started = utc_now()
         run_id = create_run_id("prepare-universe", started)
@@ -436,7 +446,7 @@ class DataWorkflow:
         reference_date = (
             liquidity_reference_date or requested_reference_date or selected_snapshot_date
         )
-        unit_policy = unit_policy_from_name(unit_policy_name)
+        unit_policy: LiquidityUnitPolicy | None = None
         if with_liquidity:
             if reference_date > selected_snapshot_date:
                 raise ValueError(
@@ -483,8 +493,8 @@ class DataWorkflow:
                 symbols=candidate_symbols,
                 start=window_start,
                 end=reference_date,
-                unit_policy=unit_policy,
             )
+            unit_policy = resolve_daily_unit_policy(intermediate_panel)
             liquidity_source_rows = _select_daily_source_rows(
                 daily_all,
                 symbols=candidate_symbols,
@@ -504,7 +514,6 @@ class DataWorkflow:
                     symbols=candidate_symbols,
                     reference_date=reference_date,
                     config=liquidity_config,
-                    unit_policy=unit_policy,
                 )
                 liquidity_results = validate_liquidity_characterization(liquidity)
                 validation_results.extend(liquidity_results)
@@ -534,7 +543,6 @@ class DataWorkflow:
             "with_liquidity": with_liquidity,
             "liquidity_reference_date": reference_date.isoformat() if with_liquidity else None,
             "liquidity_config": liquidity_config.model_dump(mode="json"),
-            "unit_policy": unit_policy.model_dump(mode="json"),
         }
         manifest = build_manifest(
             run_id=run_id,
@@ -547,6 +555,7 @@ class DataWorkflow:
             input_paths=sorted(set(input_paths)),
             output_paths=output_paths,
             parameters=parameters,
+            unit_provenance=unit_policy,
             data_contract_versions={
                 "research_universe": UNIVERSE_CONTRACT_VERSION,
                 **({"liquidity": LIQUIDITY_CONTRACT_VERSION} if with_liquidity else {}),
@@ -554,6 +563,7 @@ class DataWorkflow:
             notes=[
                 "Historical universe membership is not verified.",
                 "Included rows are research candidates, not confirmed active/tradable listings.",
+                "Liquidity unit verification is derived from selected daily-row provenance.",
             ],
             validation_results=validation_results,
         )
@@ -570,7 +580,6 @@ class DataWorkflow:
         symbols: list[str] | None,
         start: date,
         end: date,
-        unit_policy_name: str,
     ) -> WorkflowResult:
         started = utc_now()
         run_id = create_run_id("build-daily-panel", started)
@@ -595,14 +604,13 @@ class DataWorkflow:
         else:
             daily_all = daily_source[0]
         selected_symbols = _clean_optional_symbols(symbols, daily_all)
-        unit_policy = unit_policy_from_name(unit_policy_name)
         panel = build_feature_daily_panel(
             daily_all,
             symbols=selected_symbols,
             start=start,
             end=end,
-            unit_policy=unit_policy,
         )
+        unit_policy = resolve_daily_unit_policy(panel)
         selected_source = _select_daily_source_rows(
             daily_all,
             symbols=selected_symbols,
@@ -670,7 +678,7 @@ class DataWorkflow:
             },
             input_paths=input_paths,
             output_paths=output_paths,
-            parameters={"unit_policy": unit_policy.model_dump(mode="json")},
+            unit_provenance=unit_policy,
             data_contract_versions={
                 "daily_panel": DAILY_PANEL_CONTRACT_VERSION,
                 "availability": AVAILABILITY_CONTRACT_VERSION,
