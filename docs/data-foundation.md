@@ -33,11 +33,11 @@ Implemented checks include required columns, duplicate keys, OHLC relationships,
 ## Commands
 
 ```bash
-python -m hose_quant.cli data fetch-universe --exchange HOSE
-python -m hose_quant.cli data backfill-daily --symbols FPT,HPG,VCB --start 2025-01-01 --end 2026-07-03
-python -m hose_quant.cli data fetch-intraday --symbols FPT --resolution 1m --lookback-days 1
-python -m hose_quant.cli data snapshot-quotes --symbols FPT,HPG,VCB
-python -m hose_quant.cli data validate
+python3 -m hose_quant.cli data fetch-universe --exchange HOSE
+python3 -m hose_quant.cli data backfill-daily --symbols FPT,HPG,VCB --start 2025-01-01 --end 2026-07-03
+python3 -m hose_quant.cli data fetch-intraday --symbols FPT --resolution 1m --lookback-days 1
+python3 -m hose_quant.cli data snapshot-quotes --symbols FPT,HPG,VCB
+python3 -m hose_quant.cli data validate
 ```
 
 Use `--dry-run` where available to avoid provider calls. Live fetch commands require `VNSTOCK_API_KEY`.
@@ -56,4 +56,6 @@ Quote and multi-symbol fetch commands default to a small symbol limit (`MAX_QUOT
 
 ## Phase 2
 
-Recommended Phase 2 scope is to run controlled live smoke fetches, review manifests and validation output, refine normalized schemas with measured provider behavior, and design feature-engine inputs. Strategy, backtesting, ML, execution, and UI work should remain out of scope until a later phase explicitly asks for them.
+The local feature-input layer built on these normalized datasets is documented in
+[feature-input-layer.md](feature-input-layer.md). It does not change the unresolved historical
+membership, adjustment, or corporate-action limitations of this foundation.

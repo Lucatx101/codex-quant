@@ -38,9 +38,11 @@ temp/
 # Generated market data and local databases
 data/raw/**
 data/normalized/**
+data/feature_inputs/**
 data/cache/**
 data/manifests/**
 reports/data_quality/**
+reports/feature_inputs/**
 *.sqlite
 *.sqlite3
 *.db
@@ -48,6 +50,8 @@ reports/data_quality/**
 # Keep intentional placeholder files
 !data/raw/.gitkeep
 !data/normalized/.gitkeep
+!data/feature_inputs/.gitkeep
 !data/cache/.gitkeep
 !data/manifests/.gitkeep
 !reports/data_quality/.gitkeep
+!reports/feature_inputs/.gitkeep

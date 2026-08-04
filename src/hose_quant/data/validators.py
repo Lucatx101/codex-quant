@@ -7,8 +7,18 @@ from typing import Any
 
 import pandas as pd
 
+from hose_quant.data.contracts import (
+    AVAILABILITY_CONTRACT,
+    DAILY_PANEL_CONTRACT,
+    LIQUIDITY_CONTRACT,
+    RESEARCH_UNIVERSE_CONTRACT,
+)
 from hose_quant.data.models import (
+    HistoricalMembershipStatus,
     ProviderTimeParseStatus,
+    TimestampAwarenessStatus,
+    TradedValueUnit,
+    UnitVerificationStatus,
     UniverseDiagnostics,
     ValidationResult,
     ValidationSeverity,
@@ -343,6 +353,51 @@ def validate_intraday_bars(frame: pd.DataFrame) -> list[ValidationResult]:
                 affected_columns=["timestamp"],
             )
         )
+    provenance_columns = {
+        "provider_timestamp_raw",
+        "timestamp_timezone_status",
+        "timestamp_interpretation",
+        "timestamp_localization_applied",
+    }
+    missing_provenance = provenance_columns - set(map(str, frame.columns))
+    if missing_provenance:
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.WARNING,
+                check_name="legacy_timestamp_provenance_missing",
+                message=(
+                    "Legacy intraday rows do not carry the Phase 2 timestamp provenance fields; "
+                    "their timezone semantics remain unresolved."
+                ),
+                affected_columns=sorted(missing_provenance),
+                affected_row_count=len(frame),
+            )
+        )
+    else:
+        awareness = frame["timestamp_timezone_status"].astype("string")
+        naive_localized = (awareness == TimestampAwarenessStatus.NAIVE.value) & frame[
+            "timestamp_localization_applied"
+        ].fillna(False).astype(bool)
+        if naive_localized.any():
+            results.append(
+                _result(
+                    dataset_name=dataset_name,
+                    severity=ValidationSeverity.ERROR,
+                    check_name="no_unverified_naive_localization",
+                    message="Timezone-naive provider timestamps were localized without evidence.",
+                    affected_columns=[
+                        "provider_timestamp_raw",
+                        "timestamp_timezone_status",
+                        "timestamp_localization_applied",
+                    ],
+                    affected_row_count=int(naive_localized.sum()),
+                    sample_affected_keys=_sample_keys(
+                        frame[naive_localized], ["symbol", "provider_timestamp_raw"]
+                    ),
+                    blocks_output=True,
+                )
+            )
     duplicates = frame.duplicated(subset=["symbol", "resolution", "timestamp"])
     if duplicates.any():
         results.append(
@@ -392,6 +447,368 @@ def validate_intraday_bars(frame: pd.DataFrame) -> list[ValidationResult]:
                     affected_row_count=int((gaps > pd.Timedelta(minutes=90)).sum()),
                 )
             )
+    return results
+
+
+def validate_research_universe(
+    frame: pd.DataFrame,
+    *,
+    expected_input_row_count: int,
+) -> list[ValidationResult]:
+    dataset_name = "research_universe"
+    results = _missing_columns(
+        frame,
+        dataset_name=dataset_name,
+        required_columns=set(RESEARCH_UNIVERSE_CONTRACT.required_columns),
+    )
+    if results:
+        return results
+    if len(frame) != expected_input_row_count:
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="input_rows_auditable",
+                message="Prepared universe did not preserve one output row per selected input row.",
+                affected_row_count=abs(len(frame) - expected_input_row_count),
+                blocks_output=True,
+            )
+        )
+    duplicate_input_rows = frame["input_row_number"].duplicated()
+    if duplicate_input_rows.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="input_row_number_unique",
+                message="Prepared universe contains duplicate input row identifiers.",
+                affected_columns=["input_row_number"],
+                affected_row_count=int(duplicate_input_rows.sum()),
+                blocks_output=True,
+            )
+        )
+    if frame["historical_membership_verified"].fillna(False).astype(bool).any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="no_false_historical_membership",
+                message="Current provider snapshots cannot assert verified historical membership.",
+                affected_columns=[
+                    "source_snapshot_observed_at_utc",
+                    "requested_reference_date",
+                    "historical_membership_verified",
+                ],
+                blocks_output=True,
+            )
+        )
+    requested = pd.to_datetime(frame["requested_reference_date"], errors="coerce").notna()
+    status = frame["historical_membership_status"].astype("string")
+    incorrect_reference_status = requested & (
+        status != HistoricalMembershipStatus.REQUESTED_REFERENCE_UNVERIFIED.value
+    )
+    observed = pd.to_datetime(frame["source_snapshot_observed_at_utc"], errors="coerce", utc=True)
+    same_date = requested & (
+        pd.to_datetime(frame["requested_reference_date"], errors="coerce").dt.date
+        == observed.dt.date
+    )
+    incorrect_reference_status &= ~same_date
+    if incorrect_reference_status.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="requested_reference_is_not_membership_evidence",
+                message="Historical reference dates must remain structurally unverified.",
+                affected_columns=[
+                    "requested_reference_date",
+                    "historical_membership_status",
+                ],
+                affected_row_count=int(incorrect_reference_status.sum()),
+                blocks_output=True,
+            )
+        )
+    invalid_snapshot = observed.isna()
+    if invalid_snapshot.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="snapshot_observation_timestamp",
+                message="Universe rows require a valid source snapshot observation timestamp.",
+                affected_columns=["source_snapshot_observed_at_utc"],
+                affected_row_count=int(invalid_snapshot.sum()),
+                blocks_output=True,
+            )
+        )
+    snapshot_awareness = frame["source_snapshot_timezone_status"].astype("string")
+    non_aware_snapshot = snapshot_awareness != TimestampAwarenessStatus.AWARE.value
+    if non_aware_snapshot.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="snapshot_timezone_awareness",
+                message=(
+                    "Universe snapshot observation timestamps must be source-aware; naive "
+                    "values are preserved but not localized."
+                ),
+                affected_columns=[
+                    "source_snapshot_timestamp_raw",
+                    "source_snapshot_timezone_status",
+                    "source_snapshot_localization_applied",
+                ],
+                affected_row_count=int(non_aware_snapshot.sum()),
+                blocks_output=True,
+            )
+        )
+    return results
+
+
+def validate_daily_panel(
+    frame: pd.DataFrame,
+    *,
+    expected_source_row_count: int,
+) -> list[ValidationResult]:
+    dataset_name = "daily_panel"
+    results = _missing_columns(
+        frame,
+        dataset_name=dataset_name,
+        required_columns=set(DAILY_PANEL_CONTRACT.required_columns),
+    )
+    if results:
+        return results
+    if len(frame) != expected_source_row_count:
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="observed_rows_preserved",
+                message="Daily panel changed the selected source row count.",
+                affected_row_count=abs(len(frame) - expected_source_row_count),
+                blocks_output=True,
+            )
+        )
+    null_keys = frame["symbol"].isna() | pd.to_datetime(frame["date"], errors="coerce").isna()
+    if null_keys.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="panel_keys_not_null",
+                message="Daily panel contains null symbol/date keys.",
+                affected_columns=["symbol", "date"],
+                affected_row_count=int(null_keys.sum()),
+                blocks_output=True,
+            )
+        )
+    duplicates = frame.duplicated(subset=["symbol", "date"])
+    if duplicates.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="duplicate_symbol_date",
+                message="Daily panel contains duplicate symbol/date keys.",
+                affected_columns=["symbol", "date"],
+                affected_row_count=int(duplicates.sum()),
+                sample_affected_keys=_sample_keys(frame[duplicates], ["symbol", "date"]),
+                blocks_output=True,
+            )
+        )
+    results.extend(
+        _numeric_non_negative(
+            frame,
+            dataset_name=dataset_name,
+            columns=["open", "high", "low", "close", "volume"],
+        )
+    )
+    volume = pd.to_numeric(frame["volume"], errors="coerce")
+    non_integer_volume = volume.notna() & ((volume % 1) != 0)
+    if non_integer_volume.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="volume_integer_like",
+                message="Daily panel volume must be integer-like when present.",
+                affected_columns=["volume"],
+                affected_row_count=int(non_integer_volume.sum()),
+                sample_affected_keys=_sample_keys(frame[non_integer_volume], ["symbol", "date"]),
+                blocks_output=True,
+            )
+        )
+    missing_ohlc = frame[["open", "high", "low", "close"]].isna().any(axis=1)
+    if missing_ohlc.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.WARNING,
+                check_name="missing_ohlc_preserved",
+                message="Observed source rows with missing OHLC remain present in the panel.",
+                affected_columns=["open", "high", "low", "close"],
+                affected_row_count=int(missing_ohlc.sum()),
+                sample_affected_keys=_sample_keys(frame[missing_ohlc], ["symbol", "date"]),
+            )
+        )
+    relationships = {
+        "high_gte_low": frame["high"] < frame["low"],
+        "high_gte_open_close": (frame["high"] < frame["open"]) | (frame["high"] < frame["close"]),
+        "low_lte_open_close": (frame["low"] > frame["open"]) | (frame["low"] > frame["close"]),
+    }
+    for check_name, mask in relationships.items():
+        if mask.any():
+            results.append(
+                _result(
+                    dataset_name=dataset_name,
+                    severity=ValidationSeverity.ERROR,
+                    check_name=check_name,
+                    message="Daily panel contains invalid OHLC relationships.",
+                    affected_columns=["open", "high", "low", "close"],
+                    affected_row_count=int(mask.sum()),
+                    sample_affected_keys=_sample_keys(frame[mask], ["symbol", "date"]),
+                    blocks_output=True,
+                )
+            )
+    if (frame["observation_status"] != "observed_provider_bar").any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="no_synthetic_bars",
+                message="Daily panel contains rows not identified as observed provider bars.",
+                affected_columns=["observation_status"],
+                blocks_output=True,
+            )
+        )
+    if (frame["price_adjustment_status"] == "unknown").any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.WARNING,
+                check_name="price_adjustment_unknown",
+                message="Adjusted versus unadjusted price semantics remain unresolved.",
+                affected_columns=["price_adjustment_status"],
+                affected_row_count=int((frame["price_adjustment_status"] == "unknown").sum()),
+            )
+        )
+    sorted_keys = frame.sort_values(["symbol", "date"], kind="stable")[["symbol", "date"]]
+    if (
+        not frame[["symbol", "date"]]
+        .reset_index(drop=True)
+        .equals(sorted_keys.reset_index(drop=True))
+    ):
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="deterministic_ordering",
+                message="Daily panel must be sorted by symbol/date.",
+                affected_columns=["symbol", "date"],
+                blocks_output=True,
+            )
+        )
+    return results
+
+
+def validate_liquidity_characterization(frame: pd.DataFrame) -> list[ValidationResult]:
+    dataset_name = "liquidity"
+    results = _missing_columns(
+        frame,
+        dataset_name=dataset_name,
+        required_columns=set(LIQUIDITY_CONTRACT.required_columns),
+    )
+    if results:
+        return results
+    for column in ["trading_frequency", "zero_volume_frequency"]:
+        numeric = pd.to_numeric(frame[column], errors="coerce")
+        invalid = numeric.notna() & ~numeric.between(0, 1, inclusive="both")
+        if invalid.any():
+            results.append(
+                _result(
+                    dataset_name=dataset_name,
+                    severity=ValidationSeverity.ERROR,
+                    check_name=f"{column}_range",
+                    message=f"{column} must be between zero and one.",
+                    affected_columns=[column],
+                    affected_row_count=int(invalid.sum()),
+                    blocks_output=True,
+                )
+            )
+    unverified = (
+        frame["unit_verification_status"].astype("string") != UnitVerificationStatus.VERIFIED.value
+    )
+    monetary_value = pd.to_numeric(frame["average_traded_value_vnd"], errors="coerce").notna()
+    false_monetary = unverified & monetary_value
+    if false_monetary.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="monetary_units_verified",
+                message="Unverified units cannot produce average_traded_value_vnd.",
+                affected_columns=[
+                    "unit_verification_status",
+                    "average_traded_value_vnd",
+                ],
+                affected_row_count=int(false_monetary.sum()),
+                blocks_output=True,
+            )
+        )
+    unavailable_with_value = (
+        frame["traded_value_unit"].astype("string") == TradedValueUnit.UNAVAILABLE.value
+    ) & monetary_value
+    if unavailable_with_value.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="traded_value_unit_consistency",
+                message="Unavailable traded-value units cannot carry monetary values.",
+                affected_columns=["traded_value_unit", "average_traded_value_vnd"],
+                affected_row_count=int(unavailable_with_value.sum()),
+                blocks_output=True,
+            )
+        )
+    return results
+
+
+def validate_availability_diagnostics(frame: pd.DataFrame) -> list[ValidationResult]:
+    dataset_name = "daily_availability"
+    results = _missing_columns(
+        frame,
+        dataset_name=dataset_name,
+        required_columns=set(AVAILABILITY_CONTRACT.required_columns),
+    )
+    if results:
+        return results
+    coverage = pd.to_numeric(frame["weekday_coverage_ratio"], errors="coerce")
+    invalid = coverage.notna() & ~coverage.between(0, 1, inclusive="both")
+    if invalid.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="weekday_coverage_ratio_range",
+                message="Weekday coverage ratio must be between zero and one.",
+                affected_columns=["weekday_coverage_ratio"],
+                affected_row_count=int(invalid.sum()),
+                blocks_output=True,
+            )
+        )
+    absent_with_rows = frame["absence_of_data"].astype(bool) & (frame["observation_count"] > 0)
+    if absent_with_rows.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="absence_consistency",
+                message="Symbols marked absent cannot have observations.",
+                affected_columns=["absence_of_data", "observation_count"],
+                affected_row_count=int(absent_with_rows.sum()),
+                blocks_output=True,
+            )
+        )
     return results
 
 

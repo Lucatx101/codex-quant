@@ -6,6 +6,7 @@ from typing import Any
 
 import pandas as pd
 
+from hose_quant.data.market_time import timestamp_provenance
 from hose_quant.data.models import (
     BarStatus,
     ProviderTimeParseStatus,
@@ -151,14 +152,26 @@ def normalize_intraday_bars(
 ) -> pd.DataFrame:
     ingestion_timestamp_utc = ingestion_timestamp_utc or utc_now()
     frame = raw.copy()
-    parsed = pd.to_datetime(_column(frame, "time"), errors="coerce")
+    provider_times = _column(frame, "time")
+    time_provenance = [timestamp_provenance(value, provider=PROVIDER) for value in provider_times]
+    parsed = pd.Series(
+        [item.parsed_value for item in time_provenance],
+        index=frame.index,
+    )
+    parsed = pd.to_datetime(parsed, errors="coerce")
     normalized = pd.DataFrame(
         {
             "provider": PROVIDER,
             "symbol": symbol.upper(),
             "exchange": exchange.upper() if exchange else pd.NA,
+            "provider_timestamp_raw": [item.original_value for item in time_provenance],
             "timestamp": parsed,
             "trading_date": parsed.dt.date,
+            "timestamp_timezone_status": [item.awareness_status.value for item in time_provenance],
+            "timestamp_interpretation": [item.interpretation for item in time_provenance],
+            "timestamp_localization_applied": [
+                item.localization_applied for item in time_provenance
+            ],
             "resolution": resolution,
             "open": _column(frame, "open"),
             "high": _column(frame, "high"),

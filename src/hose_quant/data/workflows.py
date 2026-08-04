@@ -1,12 +1,32 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from pathlib import Path
 
 import pandas as pd
 
 from hose_quant.config import AppSettings
+from hose_quant.data.contracts import (
+    AVAILABILITY_CONTRACT_VERSION,
+    DAILY_PANEL_CONTRACT_VERSION,
+    LIQUIDITY_CONTRACT_VERSION,
+    UNIVERSE_CONTRACT_VERSION,
+)
+from hose_quant.data.feature_inputs import (
+    apply_liquidity_to_universe,
+    characterize_liquidity,
+    daily_availability_diagnostics,
+    prepare_research_universe,
+    unit_policy_from_name,
+    write_availability_report,
+)
+from hose_quant.data.feature_inputs import (
+    build_daily_panel as build_feature_daily_panel,
+)
 from hose_quant.data.manifests import build_manifest, create_run_id, write_manifest
+from hose_quant.data.market_time import aware_timestamp_to_utc
 from hose_quant.data.models import (
+    LiquidityScreenConfig,
     ValidationResult,
     ValidationSeverity,
     WorkflowResult,
@@ -21,9 +41,13 @@ from hose_quant.data.normalizers import (
 from hose_quant.data.storage import DataStorage
 from hose_quant.data.validators import (
     has_blocking_errors,
+    validate_availability_diagnostics,
     validate_daily_ohlcv,
+    validate_daily_panel,
     validate_intraday_bars,
+    validate_liquidity_characterization,
     validate_quote_snapshot,
+    validate_research_universe,
     validate_universe_snapshot,
     write_validation_reports,
 )
@@ -326,6 +350,345 @@ class DataWorkflow:
             manifest_path=str(manifest_path),
         )
 
+    def prepare_universe(
+        self,
+        *,
+        exchange: str,
+        snapshot_date: date | None,
+        requested_reference_date: date | None,
+        with_liquidity: bool,
+        liquidity_reference_date: date | None,
+        liquidity_config: LiquidityScreenConfig,
+        unit_policy_name: str,
+    ) -> WorkflowResult:
+        started = utc_now()
+        run_id = create_run_id("prepare-universe", started)
+        universe_source = self.storage.read_normalized_dataset_with_provenance("universe")
+        if universe_source is None:
+            return self._failed_local_result(
+                run_id=run_id,
+                command="data prepare-universe",
+                started=started,
+                validation_result=ValidationResult(
+                    dataset_name="research_universe",
+                    severity=ValidationSeverity.ERROR,
+                    check_name="normalized_universe_available",
+                    message="No local normalized universe snapshots were found.",
+                    blocks_output=True,
+                ),
+                parameters={"exchange": exchange, "snapshot_date": snapshot_date},
+                contract_versions={"research_universe": UNIVERSE_CONTRACT_VERSION},
+            )
+
+        universe_all, _universe_paths = universe_source
+        observed = pd.Series(
+            [
+                aware_timestamp_to_utc(value, provider="vnstock")
+                for value in universe_all["snapshot_timestamp_utc"]
+            ],
+            index=universe_all.index,
+            dtype="datetime64[ns, UTC]",
+        )
+        if snapshot_date is not None:
+            snapshot_candidates = universe_all[observed.dt.date == snapshot_date].copy()
+        else:
+            snapshot_candidates = universe_all[observed.notna()].copy()
+        if snapshot_candidates.empty:
+            target = snapshot_date.isoformat() if snapshot_date else "any valid date"
+            return self._failed_local_result(
+                run_id=run_id,
+                command="data prepare-universe",
+                started=started,
+                validation_result=ValidationResult(
+                    dataset_name="research_universe",
+                    severity=ValidationSeverity.ERROR,
+                    check_name="requested_snapshot_available",
+                    message=f"No normalized universe snapshot was found for {target}.",
+                    blocks_output=True,
+                ),
+                parameters={"exchange": exchange, "snapshot_date": snapshot_date},
+                contract_versions={"research_universe": UNIVERSE_CONTRACT_VERSION},
+            )
+        candidate_times = pd.Series(
+            [
+                aware_timestamp_to_utc(value, provider="vnstock")
+                for value in snapshot_candidates["snapshot_timestamp_utc"]
+            ],
+            index=snapshot_candidates.index,
+            dtype="datetime64[ns, UTC]",
+        )
+        selected_timestamp = candidate_times.max()
+        selected = snapshot_candidates[candidate_times == selected_timestamp].copy()
+        selected_paths = _input_paths(selected)
+        selected = selected.drop(columns=["__input_path"], errors="ignore")
+        selected_snapshot_date = pd.Timestamp(selected_timestamp).date()
+        prepared = prepare_research_universe(
+            selected,
+            exchange=exchange,
+            requested_reference_date=requested_reference_date,
+        )
+        validation_results = validate_research_universe(
+            prepared,
+            expected_input_row_count=len(selected),
+        )
+        output_paths: list[Path] = []
+        input_paths = list(selected_paths)
+        reference_date = (
+            liquidity_reference_date or requested_reference_date or selected_snapshot_date
+        )
+        unit_policy = unit_policy_from_name(unit_policy_name)
+        if with_liquidity:
+            if reference_date > selected_snapshot_date:
+                raise ValueError(
+                    "Liquidity reference date cannot be after the selected universe snapshot "
+                    "observation date."
+                )
+            daily_source = self.storage.read_normalized_dataset_with_provenance("daily")
+            daily_all = (
+                daily_source[0]
+                if daily_source is not None
+                else pd.DataFrame(
+                    columns=[
+                        "provider",
+                        "symbol",
+                        "exchange",
+                        "date",
+                        "open",
+                        "high",
+                        "low",
+                        "close",
+                        "volume",
+                        "adjusted_flag",
+                        "source_resolution",
+                        "ingestion_timestamp_utc",
+                    ]
+                )
+            )
+            candidate_symbols = sorted(
+                prepared.loc[
+                    (prepared["candidate_status"] == "included_candidate")
+                    & prepared["symbol"].notna(),
+                    "symbol",
+                ]
+                .astype(str)
+                .unique()
+                .tolist()
+            )
+            window_start = pd.bdate_range(
+                end=pd.Timestamp(reference_date),
+                periods=liquidity_config.window_weekdays,
+            )[0].date()
+            intermediate_panel = build_feature_daily_panel(
+                daily_all,
+                symbols=candidate_symbols,
+                start=window_start,
+                end=reference_date,
+                unit_policy=unit_policy,
+            )
+            liquidity_source_rows = _select_daily_source_rows(
+                daily_all,
+                symbols=candidate_symbols,
+                start=window_start,
+                end=reference_date,
+            )
+            panel_results = validate_daily_panel(
+                intermediate_panel,
+                expected_source_row_count=len(liquidity_source_rows),
+            )
+            validation_results.extend(panel_results)
+            if daily_source is not None:
+                input_paths.extend(_input_paths(liquidity_source_rows))
+            if not has_blocking_errors(panel_results):
+                liquidity = characterize_liquidity(
+                    intermediate_panel,
+                    symbols=candidate_symbols,
+                    reference_date=reference_date,
+                    config=liquidity_config,
+                    unit_policy=unit_policy,
+                )
+                liquidity_results = validate_liquidity_characterization(liquidity)
+                validation_results.extend(liquidity_results)
+                if not has_blocking_errors(liquidity_results):
+                    prepared = apply_liquidity_to_universe(prepared, liquidity)
+                    output_paths.append(
+                        self.storage.write_parquet(
+                            liquidity,
+                            self.storage.feature_liquidity_path(reference_date, run_id),
+                        )
+                    )
+
+        if not has_blocking_errors(validation_results):
+            output_paths.append(
+                self.storage.write_parquet(
+                    prepared,
+                    self.storage.feature_universe_path(selected_snapshot_date, run_id),
+                )
+            )
+        status = "failed" if has_blocking_errors(validation_results) else "success"
+        parameters = {
+            "exchange": exchange.upper(),
+            "selected_snapshot_observed_at_utc": selected_timestamp.isoformat(),
+            "requested_reference_date": (
+                requested_reference_date.isoformat() if requested_reference_date else None
+            ),
+            "with_liquidity": with_liquidity,
+            "liquidity_reference_date": reference_date.isoformat() if with_liquidity else None,
+            "liquidity_config": liquidity_config.model_dump(mode="json"),
+            "unit_policy": unit_policy.model_dump(mode="json"),
+        }
+        manifest = build_manifest(
+            run_id=run_id,
+            command="data prepare-universe",
+            started_at_utc=started,
+            finished_at_utc=utc_now(),
+            status=status,
+            exchange=exchange.upper(),
+            row_counts={"selected_normalized": len(selected), "prepared": len(prepared)},
+            input_paths=sorted(set(input_paths)),
+            output_paths=output_paths,
+            parameters=parameters,
+            data_contract_versions={
+                "research_universe": UNIVERSE_CONTRACT_VERSION,
+                **({"liquidity": LIQUIDITY_CONTRACT_VERSION} if with_liquidity else {}),
+            },
+            notes=[
+                "Historical universe membership is not verified.",
+                "Included rows are research candidates, not confirmed active/tradable listings.",
+            ],
+            validation_results=validation_results,
+        )
+        manifest_path = write_manifest(manifest, self.storage.manifest_root)
+        return WorkflowResult(
+            manifest=manifest,
+            validation_results=validation_results,
+            manifest_path=str(manifest_path),
+        )
+
+    def build_daily_panel(
+        self,
+        *,
+        symbols: list[str] | None,
+        start: date,
+        end: date,
+        unit_policy_name: str,
+    ) -> WorkflowResult:
+        started = utc_now()
+        run_id = create_run_id("build-daily-panel", started)
+        daily_source = self.storage.read_normalized_dataset_with_provenance("daily")
+        if daily_source is None:
+            daily_all = pd.DataFrame(
+                columns=[
+                    "provider",
+                    "symbol",
+                    "exchange",
+                    "date",
+                    "open",
+                    "high",
+                    "low",
+                    "close",
+                    "volume",
+                    "adjusted_flag",
+                    "source_resolution",
+                    "ingestion_timestamp_utc",
+                ]
+            )
+        else:
+            daily_all = daily_source[0]
+        selected_symbols = _clean_optional_symbols(symbols, daily_all)
+        unit_policy = unit_policy_from_name(unit_policy_name)
+        panel = build_feature_daily_panel(
+            daily_all,
+            symbols=selected_symbols,
+            start=start,
+            end=end,
+            unit_policy=unit_policy,
+        )
+        selected_source = _select_daily_source_rows(
+            daily_all,
+            symbols=selected_symbols,
+            start=start,
+            end=end,
+        )
+        validation_results = validate_daily_panel(
+            panel,
+            expected_source_row_count=len(selected_source),
+        )
+        diagnostics = daily_availability_diagnostics(
+            panel,
+            symbols=selected_symbols,
+            start=start,
+            end=end,
+        )
+        validation_results.extend(validate_availability_diagnostics(diagnostics))
+        if panel.empty:
+            validation_results.append(
+                ValidationResult(
+                    dataset_name="daily_panel",
+                    severity=ValidationSeverity.ERROR,
+                    check_name="daily_observations_available",
+                    message="No normalized daily rows matched the requested symbols/date range.",
+                    blocks_output=True,
+                )
+            )
+
+        output_paths: list[Path] = []
+        diagnostics_path = self.storage.write_parquet(
+            diagnostics,
+            self.storage.feature_availability_path(start, end, run_id),
+        )
+        output_paths.append(diagnostics_path)
+        report_json, report_markdown = write_availability_report(
+            diagnostics,
+            json_path=self.settings.report_dir / "feature_inputs" / f"{run_id}-availability.json",
+            markdown_path=self.settings.report_dir / "feature_inputs" / f"{run_id}-availability.md",
+        )
+        output_paths.extend([report_json, report_markdown])
+        if not has_blocking_errors(validation_results):
+            output_paths.insert(
+                0,
+                self.storage.write_parquet(
+                    panel,
+                    self.storage.feature_daily_panel_path(start, end, run_id),
+                ),
+            )
+        status = "failed" if has_blocking_errors(validation_results) else "success"
+        input_paths = _input_paths(selected_source)
+        manifest = build_manifest(
+            run_id=run_id,
+            command="data build-daily-panel",
+            started_at_utc=started,
+            finished_at_utc=utc_now(),
+            status=status,
+            symbols=selected_symbols,
+            exchange="HOSE",
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            row_counts={
+                "selected_normalized": len(selected_source),
+                "panel": len(panel),
+                "diagnostic_symbols": len(diagnostics),
+            },
+            input_paths=input_paths,
+            output_paths=output_paths,
+            parameters={"unit_policy": unit_policy.model_dump(mode="json")},
+            data_contract_versions={
+                "daily_panel": DAILY_PANEL_CONTRACT_VERSION,
+                "availability": AVAILABILITY_CONTRACT_VERSION,
+            },
+            notes=[
+                "No bars were synthesized or forward-filled.",
+                "Weekday coverage does not remove Vietnamese holidays or exchange closures.",
+                "Price adjustment status remains explicit and may be unknown.",
+            ],
+            validation_results=validation_results,
+        )
+        manifest_path = write_manifest(manifest, self.storage.manifest_root)
+        return WorkflowResult(
+            manifest=manifest,
+            validation_results=validation_results,
+            manifest_path=str(manifest_path),
+        )
+
     def validate_existing_data(self, *, write_reports: bool = True) -> WorkflowResult:
         started = utc_now()
         run_id = create_run_id("validate", started)
@@ -406,6 +769,33 @@ class DataWorkflow:
         )
         return WorkflowResult(manifest=manifest)
 
+    def _failed_local_result(
+        self,
+        *,
+        run_id: str,
+        command: str,
+        started: datetime,
+        validation_result: ValidationResult,
+        parameters: dict[str, object],
+        contract_versions: dict[str, str],
+    ) -> WorkflowResult:
+        manifest = build_manifest(
+            run_id=run_id,
+            command=command,
+            started_at_utc=started,
+            finished_at_utc=utc_now(),
+            status="failed",
+            parameters=parameters,
+            data_contract_versions=contract_versions,
+            validation_results=[validation_result],
+        )
+        manifest_path = write_manifest(manifest, self.storage.manifest_root)
+        return WorkflowResult(
+            manifest=manifest,
+            validation_results=[validation_result],
+            manifest_path=str(manifest_path),
+        )
+
     def _require_provider(self) -> VnstockDataProvider:
         if self.provider is None:
             self.provider = VnstockDataProvider(self.settings)
@@ -437,3 +827,33 @@ def _status(validation_results: list[ValidationResult], errors: list[str]) -> st
     if errors or has_blocking_errors(validation_results):
         return "failed"
     return "success"
+
+
+def _input_paths(frame: pd.DataFrame) -> list[Path]:
+    if "__input_path" not in frame.columns:
+        return []
+    return sorted({Path(value) for value in frame["__input_path"].dropna().astype(str)})
+
+
+def _clean_optional_symbols(symbols: list[str] | None, daily: pd.DataFrame) -> list[str]:
+    if symbols:
+        return _clean_symbols(symbols)
+    if "symbol" not in daily.columns:
+        return []
+    return sorted(daily["symbol"].dropna().astype(str).str.strip().str.upper().unique().tolist())
+
+
+def _select_daily_source_rows(
+    daily: pd.DataFrame,
+    *,
+    symbols: list[str],
+    start: date,
+    end: date,
+) -> pd.DataFrame:
+    if daily.empty:
+        return daily.copy()
+    dates = pd.to_datetime(daily["date"], errors="coerce").dt.date
+    normalized_symbols = daily["symbol"].astype("string").str.strip().str.upper()
+    return daily[
+        normalized_symbols.isin(symbols) & dates.between(start, end, inclusive="both")
+    ].copy()

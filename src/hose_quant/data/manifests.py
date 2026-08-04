@@ -5,6 +5,7 @@ import json
 import subprocess
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from hose_quant.config import PROJECT_ROOT
 from hose_quant.data.models import DatasetManifest, ValidationResult
@@ -53,7 +54,11 @@ def build_manifest(
     end_date: str | None = None,
     resolution: str | None = None,
     row_counts: dict[str, int] | None = None,
+    input_paths: list[Path] | None = None,
     output_paths: list[Path] | None = None,
+    parameters: dict[str, Any] | None = None,
+    data_contract_versions: dict[str, str] | None = None,
+    notes: list[str] | None = None,
     validation_results: list[ValidationResult] | None = None,
     error_summary: list[str] | None = None,
     provider_call_count: int = 0,
@@ -71,7 +76,11 @@ def build_manifest(
         finished_at_utc=finished_at_utc,
         status=status,
         row_counts=row_counts or {},
+        input_paths=[str(path) for path in input_paths or []],
         output_paths=[str(path) for path in output_paths or []],
+        parameters=parameters or {},
+        data_contract_versions=data_contract_versions or {},
+        notes=notes or [],
         validation_summary=summarize_validation(validation_results or []),
         error_summary=error_summary or [],
         package_versions=package_versions(),

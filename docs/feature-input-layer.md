@@ -1,0 +1,168 @@
+# Feature Input Layer
+
+Phase 2 converts local normalized Parquet into versioned, research-ready inputs. It does not
+fetch live data or implement features, labels, strategies, backtests, portfolios, execution, ML,
+or UI code.
+
+## Architecture
+
+The layer extends the existing data architecture instead of creating a second pipeline:
+
+- `contracts.py` defines versioned universe, daily-panel, liquidity, availability, and
+  market-time contracts.
+- `feature_inputs.py` contains deterministic DataFrame transformations and report rendering.
+- `market_time.py` defines HOSE time conventions and preserves timestamp provenance.
+- `validators.py` enforces contract invariants and returns existing structured validation models.
+- `workflows.py`, `storage.py`, and `manifests.py` provide local I/O and provenance through the
+  same mechanisms as Phase 1.
+
+The canonical daily feature input is long-form, keyed and ordered by `symbol,date`. Long form
+preserves sparse observations without inventing bars and fits the existing symbol-partitioned
+normalized storage.
+
+## Commands
+
+All Phase 2 commands read local normalized data and make zero provider calls.
+
+```bash
+# Latest local snapshot, with no historical membership claim
+python3 -m hose_quant.cli data prepare-universe --exchange HOSE
+
+# Select an observed snapshot and record a separate, unverified research reference date
+python3 -m hose_quant.cli data prepare-universe \
+  --snapshot-date 2026-07-04 \
+  --reference-date 2025-12-31
+
+# Screen candidates using data available through the stated liquidity reference date
+python3 -m hose_quant.cli data prepare-universe \
+  --snapshot-date 2026-07-04 \
+  --with-liquidity \
+  --liquidity-reference-date 2026-07-02 \
+  --window-weekdays 20 \
+  --min-history-observations 15 \
+  --min-trading-frequency 0.8 \
+  --max-zero-volume-frequency 0.2 \
+  --min-average-volume 100000
+
+# Build a panel plus per-symbol availability diagnostics
+python3 -m hose_quant.cli data build-daily-panel \
+  --symbols FPT,HPG,VCB \
+  --start 2026-05-04 \
+  --end 2026-07-02
+```
+
+`prepare-universe --help` lists every configurable threshold. Omitting `--symbols` from
+`build-daily-panel` selects all symbols present in local daily storage.
+
+## Universe Contract
+
+The universe operation selects one actually observed provider snapshot. Each selected input row
+produces one output row with `input_row_number`, normalized/raw symbol evidence, provider security
+type, candidate status, and structured reasons.
+
+- `included_candidate` means only that the provider reported a stock-like type and basic record
+  validation passed. It does not mean common stock, actively listed, or tradable.
+- Known non-stock types are `excluded` with a provider-type reason.
+- Duplicates and unsupported classifications are `uncertain`; malformed symbols and exchange
+  mismatches are excluded.
+- `source_snapshot_observed_at_utc` records when the snapshot was observed.
+- Raw snapshot time, timezone-awareness status, interpretation, and localization status are also
+  retained; a naive snapshot observation is rejected rather than assumed to be UTC.
+- `requested_reference_date` is research metadata only.
+- `historical_membership_verified` is always false for the current provider snapshot.
+- A reference date different from the snapshot date forces
+  `historical_membership_status=requested_reference_unverified`.
+
+This makes survivorship risk visible but does not solve it. A true historical membership source
+is still required before point-in-time universe claims are possible.
+
+## Liquidity Contract
+
+Liquidity is characterized on a trailing window of expected weekdays ending at
+`reference_date`. Only observations on or before that date are used. The current expectation does
+not remove Vietnamese holidays, exchange closures, or symbol-specific halts.
+
+Per-symbol output includes observed dates, positive/zero-volume counts, trading frequency,
+zero-volume frequency, average provider-reported volume, recent valid close, missing-data status,
+insufficient-history status, screening outcome, and reasons. Weekend observations are not used in
+the window and cause a failed screen with an auditable reason.
+
+Screening thresholds are configurable through CLI options or these environment settings:
+
+- `LIQUIDITY_WINDOW_WEEKDAYS`
+- `LIQUIDITY_MIN_HISTORY_OBSERVATIONS`
+- `LIQUIDITY_MIN_TRADING_FREQUENCY`
+- `LIQUIDITY_MAX_ZERO_VOLUME_FREQUENCY`
+- `LIQUIDITY_MIN_AVERAGE_VOLUME`
+- `LIQUIDITY_MIN_AVERAGE_TRADED_VALUE_VND`
+
+The default unit policy is `unverified`. Under it, average volume is explicitly measured in
+provider units and `average_traded_value_vnd` remains null. A VND threshold raises an error.
+
+The opt-in `verified-kbs-ohlcv` policy scales price by 1,000 and volume by 1 to calculate VND.
+It may be selected only after independently confirming that the input came from KBS OHLCV.
+Phase 1 normalized files record `provider=vnstock` but not `source=kbs`, so the CLI never selects
+this policy automatically. Evidence is based on the official [Vnstock Market schema](https://vnstocks.com/docs/vnstock-data/cau-truc-du-lieu/market), which shows decimal OHLCV price and integer traded volume, and the official [Vnstock release history](https://vnstocks.com/docs/vnstock-insider-api/lich-su-phien-ban), which states that KBS history prices are normalized to thousand VND.
+
+## Daily Panel
+
+The `daily-panel-v1` contract requires provider, symbol, exchange, date, OHLCV, source resolution,
+ingestion provenance, observation status, adjustment status, date/timestamp semantics, timezone
+convention, and unit status. It enforces deterministic ordering, unique `symbol,date` keys,
+nonnegative and integer-like volume, and valid OHLC relationships.
+
+The panel contains observed provider rows only. It does not create a rectangular symbol/date grid,
+forward-fill values, synthesize market bars, or construct adjusted prices. Missing source values
+remain null. `price_adjustment_status` is `unknown` unless a provider flag exists, in which case it
+is still `provider_flag_unverified` rather than treated as authoritative.
+
+## Availability Diagnostics
+
+Every requested symbol receives a diagnostic row, including symbols with no data. Diagnostics
+include observed range, observation and duplicate counts, missing/invalid OHLC counts, zero-volume
+count, weekend observations, expected weekdays, missing expected weekdays, and coverage ratio.
+
+The expected-session model is deliberately named `weekdays_only`. Vietnamese public holidays are
+not silently classified as exchange-confirmed missing sessions; reports state that the holiday
+calendar is incomplete.
+
+## Market Time
+
+The target convention is `Asia/Ho_Chi_Minh`. Daily dates remain unlocalized provider trading-date
+labels. Timezone-aware intraday timestamps retain their source timezone; timezone-naive values
+retain their raw value, `naive` status, provider context, and `localization_applied=false`.
+
+The current HOSE schedule policy records opening auction 09:00-09:15, continuous morning
+09:15-11:30, lunch break 11:30-13:00, continuous afternoon 13:00-14:30, closing auction
+14:30-14:45, and negotiated trading through 15:00. The policy follows official HOSE trading rules
+([trading rules](https://staticfile.hsx.vn/Uploads/LocalFiles/993f05f252bb4bf0a755bcd51440f90f/20210704_Quy%20ch%E1%BA%BF%20giao%20d%E1%BB%8Bch.pdf),
+[session table](https://staticfile.hsx.vn/Uploads/UploadDocuments/2372196/2.Thoi%20gian%20giao%20dich.pdf))
+but is not a complete exchange calendar; restricted instruments may use different schedules.
+
+## Outputs And Provenance
+
+Generated files are ignored by Git:
+
+```text
+data/feature_inputs/vnstock/universe/snapshot_date=YYYY-MM-DD/*.parquet
+data/feature_inputs/vnstock/daily_panel/start_date=YYYY-MM-DD/end_date=YYYY-MM-DD/*.parquet
+data/feature_inputs/vnstock/liquidity/reference_date=YYYY-MM-DD/*.parquet
+data/feature_inputs/vnstock/availability/start_date=YYYY-MM-DD/end_date=YYYY-MM-DD/*.parquet
+reports/feature_inputs/*-availability.json
+reports/feature_inputs/*-availability.md
+data/manifests/<run_id>.json
+```
+
+Manifests now include input paths, output paths, parameters, contract versions, package/Git
+provenance, row counts, validation summary, notes, and provider call count. Phase 2 operations set
+provider call count to zero.
+
+## Known Risks
+
+- Historical membership, delisting dates, active-trading state, and survivorship-safe universe
+  data are unavailable.
+- Price adjustment and corporate-action completeness remain unverified.
+- The weekday calendar omits Vietnamese holidays, ad hoc closures, and symbol halts.
+- Legacy normalized daily files lack source-specific unit provenance.
+- Legacy intraday files predate the Phase 2 raw timestamp/awareness fields and remain explicitly
+  unresolved rather than being relocalized.

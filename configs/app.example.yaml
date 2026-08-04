@@ -6,4 +6,10 @@ request_timeout_seconds: 10
 max_retry_attempts: 2
 provider_sleep_seconds: 0
 max_quote_symbols: 20
+liquidity_window_weekdays: 20
+liquidity_min_history_observations: 15
+liquidity_min_trading_frequency: 0.8
+liquidity_max_zero_volume_frequency: 0.2
+liquidity_min_average_volume: null
+liquidity_min_average_traded_value_vnd: null
 provider: vnstock

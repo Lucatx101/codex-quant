@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from hose_quant.config import AppSettings, MissingCredentialError, load_settings
+from hose_quant.data.models import LiquidityScreenConfig
 from hose_quant.data.validators import has_blocking_errors
 from hose_quant.data.vnstock_adapter import VnstockCapabilityAuditor
 from hose_quant.data.workflows import DataWorkflow, SafetyLimitError
@@ -27,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument("--json-path", type=Path, default=None)
     audit.add_argument("--markdown-path", type=Path, default=None)
 
-    data = subparsers.add_parser("data", help="Run Phase 1 data-foundation commands.")
+    data = subparsers.add_parser("data", help="Run provider data and local feature-input commands.")
     data_subparsers = data.add_subparsers(dest="data_command", required=True)
 
     universe = data_subparsers.add_parser(
@@ -68,6 +69,59 @@ def build_parser() -> argparse.ArgumentParser:
     )
     validate.add_argument(
         "--dry-run", action="store_true", help="Do not write data-quality reports."
+    )
+
+    prepare = data_subparsers.add_parser(
+        "prepare-universe",
+        help="Prepare an auditable research universe from a local normalized snapshot.",
+    )
+    prepare.add_argument("--exchange", default="HOSE")
+    prepare.add_argument(
+        "--snapshot-date",
+        default=None,
+        help="Observed snapshot date to select; defaults to the latest local snapshot.",
+    )
+    prepare.add_argument(
+        "--reference-date",
+        default=None,
+        help=(
+            "Optional research reference date recorded as unverified membership metadata; "
+            "it does not backdate the snapshot."
+        ),
+    )
+    prepare.add_argument("--with-liquidity", action="store_true")
+    prepare.add_argument("--liquidity-reference-date", default=None)
+    prepare.add_argument("--window-weekdays", type=int, default=None)
+    prepare.add_argument("--min-history-observations", type=int, default=None)
+    prepare.add_argument("--min-trading-frequency", type=float, default=None)
+    prepare.add_argument("--max-zero-volume-frequency", type=float, default=None)
+    prepare.add_argument("--min-average-volume", type=float, default=None)
+    prepare.add_argument("--min-average-traded-value-vnd", type=float, default=None)
+    prepare.add_argument(
+        "--unit-policy",
+        choices=["unverified", "verified-kbs-ohlcv"],
+        default="unverified",
+        help=(
+            "Unit interpretation. Monetary metrics require explicit verified-kbs-ohlcv "
+            "source provenance."
+        ),
+    )
+
+    panel = data_subparsers.add_parser(
+        "build-daily-panel",
+        help="Build a validated long-form daily panel and availability diagnostics locally.",
+    )
+    panel.add_argument(
+        "--symbols",
+        default=None,
+        help="Optional comma-separated symbols; defaults to all locally stored daily symbols.",
+    )
+    panel.add_argument("--start", required=True, help="Start date as YYYY-MM-DD.")
+    panel.add_argument("--end", required=True, help="End date as YYYY-MM-DD.")
+    panel.add_argument(
+        "--unit-policy",
+        choices=["unverified", "verified-kbs-ohlcv"],
+        default="unverified",
     )
     return parser
 
@@ -161,6 +215,23 @@ def _run_data_command(args: argparse.Namespace, settings: AppSettings) -> int:
             )
         elif args.data_command == "validate":
             result = workflow.validate_existing_data(write_reports=not args.dry_run)
+        elif args.data_command == "prepare-universe":
+            result = workflow.prepare_universe(
+                exchange=args.exchange,
+                snapshot_date=_parse_optional_date(args.snapshot_date),
+                requested_reference_date=_parse_optional_date(args.reference_date),
+                with_liquidity=args.with_liquidity,
+                liquidity_reference_date=_parse_optional_date(args.liquidity_reference_date),
+                liquidity_config=_liquidity_config(args, settings),
+                unit_policy_name=args.unit_policy,
+            )
+        elif args.data_command == "build-daily-panel":
+            result = workflow.build_daily_panel(
+                symbols=_split_symbols(args.symbols) if args.symbols else None,
+                start=_parse_date(args.start),
+                end=_parse_date(args.end),
+                unit_policy_name=args.unit_policy,
+            )
         else:
             raise ValueError(f"Unknown data command: {args.data_command}")
     except (SafetyLimitError, ValueError) as exc:
@@ -187,6 +258,48 @@ def _split_symbols(value: str) -> list[str]:
 
 def _parse_date(value: str) -> date:
     return date.fromisoformat(value)
+
+
+def _parse_optional_date(value: str | None) -> date | None:
+    return _parse_date(value) if value else None
+
+
+def _liquidity_config(
+    args: argparse.Namespace,
+    settings: AppSettings,
+) -> LiquidityScreenConfig:
+    return LiquidityScreenConfig(
+        window_weekdays=(
+            args.window_weekdays
+            if args.window_weekdays is not None
+            else settings.liquidity_window_weekdays
+        ),
+        min_history_observations=(
+            args.min_history_observations
+            if args.min_history_observations is not None
+            else settings.liquidity_min_history_observations
+        ),
+        min_trading_frequency=(
+            args.min_trading_frequency
+            if args.min_trading_frequency is not None
+            else settings.liquidity_min_trading_frequency
+        ),
+        max_zero_volume_frequency=(
+            args.max_zero_volume_frequency
+            if args.max_zero_volume_frequency is not None
+            else settings.liquidity_max_zero_volume_frequency
+        ),
+        min_average_volume_provider_units=(
+            args.min_average_volume
+            if args.min_average_volume is not None
+            else settings.liquidity_min_average_volume
+        ),
+        min_average_traded_value_vnd=(
+            args.min_average_traded_value_vnd
+            if args.min_average_traded_value_vnd is not None
+            else settings.liquidity_min_average_traded_value_vnd
+        ),
+    )
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ class DataStorage:
         self.data_dir = data_dir
         self.raw_root = data_dir / "raw" / "vnstock"
         self.normalized_root = data_dir / "normalized" / "vnstock"
+        self.feature_input_root = data_dir / "feature_inputs" / "vnstock"
         self.cache_root = data_dir / "cache"
         self.manifest_root = data_dir / "manifests"
 
@@ -25,6 +26,10 @@ class DataStorage:
             self.normalized_root / "daily",
             self.normalized_root / "intraday",
             self.normalized_root / "quotes",
+            self.feature_input_root / "universe",
+            self.feature_input_root / "daily_panel",
+            self.feature_input_root / "liquidity",
+            self.feature_input_root / "availability",
         ]:
             path.mkdir(parents=True, exist_ok=True)
 
@@ -74,6 +79,40 @@ class DataStorage:
             / f"{run_id}.parquet"
         )
 
+    def feature_universe_path(self, snapshot_date: date, run_id: str) -> Path:
+        return (
+            self.feature_input_root
+            / "universe"
+            / f"snapshot_date={snapshot_date.isoformat()}"
+            / f"{run_id}.parquet"
+        )
+
+    def feature_daily_panel_path(self, start: date, end: date, run_id: str) -> Path:
+        return (
+            self.feature_input_root
+            / "daily_panel"
+            / f"start_date={start.isoformat()}"
+            / f"end_date={end.isoformat()}"
+            / f"{run_id}.parquet"
+        )
+
+    def feature_liquidity_path(self, reference_date: date, run_id: str) -> Path:
+        return (
+            self.feature_input_root
+            / "liquidity"
+            / f"reference_date={reference_date.isoformat()}"
+            / f"{run_id}.parquet"
+        )
+
+    def feature_availability_path(self, start: date, end: date, run_id: str) -> Path:
+        return (
+            self.feature_input_root
+            / "availability"
+            / f"start_date={start.isoformat()}"
+            / f"end_date={end.isoformat()}"
+            / f"{run_id}.parquet"
+        )
+
     def write_parquet(self, frame: pd.DataFrame, path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         frame.to_parquet(path, index=False)
@@ -107,13 +146,31 @@ class DataStorage:
         return output_paths
 
     def read_normalized_dataset(self, dataset: str) -> pd.DataFrame | None:
+        result = self.read_normalized_dataset_with_provenance(dataset)
+        if result is None:
+            return None
+        frame, _paths = result
+        return frame.drop(columns=["__input_path"], errors="ignore")
+
+    def normalized_dataset_paths(self, dataset: str) -> list[Path]:
         dataset_dir = self.normalized_root / dataset
         if not dataset_dir.exists():
-            return None
-        paths = sorted(dataset_dir.glob("**/*.parquet"))
+            return []
+        return sorted(dataset_dir.glob("**/*.parquet"))
+
+    def read_normalized_dataset_with_provenance(
+        self,
+        dataset: str,
+    ) -> tuple[pd.DataFrame, list[Path]] | None:
+        paths = self.normalized_dataset_paths(dataset)
         if not paths:
             return None
-        return pd.concat([pd.read_parquet(path) for path in paths], ignore_index=True)
+        frames = []
+        for path in paths:
+            frame = pd.read_parquet(path)
+            frame["__input_path"] = str(path)
+            frames.append(frame)
+        return pd.concat(frames, ignore_index=True), paths
 
 
 def _coerce_date(value: Any) -> date:

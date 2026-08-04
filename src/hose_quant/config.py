@@ -38,6 +38,26 @@ class AppSettings(BaseSettings):
         default=0.0, ge=0, validation_alias="PROVIDER_SLEEP_SECONDS"
     )
     max_quote_symbols: int = Field(default=20, ge=1, validation_alias="MAX_QUOTE_SYMBOLS")
+    liquidity_window_weekdays: int = Field(
+        default=20, ge=1, validation_alias="LIQUIDITY_WINDOW_WEEKDAYS"
+    )
+    liquidity_min_history_observations: int = Field(
+        default=15, ge=1, validation_alias="LIQUIDITY_MIN_HISTORY_OBSERVATIONS"
+    )
+    liquidity_min_trading_frequency: float = Field(
+        default=0.8, ge=0, le=1, validation_alias="LIQUIDITY_MIN_TRADING_FREQUENCY"
+    )
+    liquidity_max_zero_volume_frequency: float = Field(
+        default=0.2, ge=0, le=1, validation_alias="LIQUIDITY_MAX_ZERO_VOLUME_FREQUENCY"
+    )
+    liquidity_min_average_volume: float | None = Field(
+        default=None, ge=0, validation_alias="LIQUIDITY_MIN_AVERAGE_VOLUME"
+    )
+    liquidity_min_average_traded_value_vnd: float | None = Field(
+        default=None,
+        ge=0,
+        validation_alias="LIQUIDITY_MIN_AVERAGE_TRADED_VALUE_VND",
+    )
     provider: str = Field(default="vnstock", validation_alias="PROVIDER")
 
     @field_validator("log_level")
@@ -77,6 +97,20 @@ class AppSettings(BaseSettings):
             "max_retry_attempts": self.max_retry_attempts,
             "provider_sleep_seconds": self.provider_sleep_seconds,
             "max_quote_symbols": self.max_quote_symbols,
+            "liquidity_window_weekdays": self.liquidity_window_weekdays,
+            "liquidity_min_history_observations": self.liquidity_min_history_observations,
+            "liquidity_min_trading_frequency": self.liquidity_min_trading_frequency,
+            "liquidity_max_zero_volume_frequency": self.liquidity_max_zero_volume_frequency,
+            "liquidity_min_average_volume": (
+                self.liquidity_min_average_volume
+                if self.liquidity_min_average_volume is not None
+                else "unset"
+            ),
+            "liquidity_min_average_traded_value_vnd": (
+                self.liquidity_min_average_traded_value_vnd
+                if self.liquidity_min_average_traded_value_vnd is not None
+                else "unset"
+            ),
             "provider": self.provider,
         }
 

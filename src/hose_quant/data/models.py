@@ -4,7 +4,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def utc_now() -> datetime:
@@ -61,6 +61,125 @@ class BarStatus(StrEnum):
     COMPLETE = "complete"
     FORMING = "forming"
     UNKNOWN = "unknown"
+
+
+class UniverseCandidateStatus(StrEnum):
+    INCLUDED_CANDIDATE = "included_candidate"
+    EXCLUDED = "excluded"
+    UNCERTAIN = "uncertain"
+
+
+class HistoricalMembershipStatus(StrEnum):
+    CURRENT_SNAPSHOT_ONLY = "current_snapshot_only"
+    REQUESTED_REFERENCE_UNVERIFIED = "requested_reference_unverified"
+
+
+class PriceAdjustmentStatus(StrEnum):
+    UNKNOWN = "unknown"
+    PROVIDER_FLAG_UNVERIFIED = "provider_flag_unverified"
+
+
+class UnitVerificationStatus(StrEnum):
+    UNVERIFIED = "unverified"
+    VERIFIED = "verified"
+
+
+class PriceUnit(StrEnum):
+    UNKNOWN = "unknown"
+    VND = "vnd"
+    THOUSAND_VND = "thousand_vnd"
+
+
+class VolumeUnit(StrEnum):
+    PROVIDER_UNITS = "provider_units"
+    SHARES = "shares"
+
+
+class TradedValueUnit(StrEnum):
+    UNAVAILABLE = "unavailable"
+    VND = "vnd"
+
+
+class MissingDataStatus(StrEnum):
+    ABSENT = "absent"
+    PARTIAL = "partial"
+    COMPLETE_WEEKDAY_COVERAGE = "complete_weekday_coverage"
+
+
+class LiquidityScreenStatus(StrEnum):
+    NOT_SCREENED = "not_screened"
+    PASSED = "passed"
+    FAILED = "failed"
+    INSUFFICIENT_HISTORY = "insufficient_history"
+    ABSENT_DATA = "absent_data"
+
+
+class TimestampAwarenessStatus(StrEnum):
+    AWARE = "aware"
+    NAIVE = "naive"
+    INVALID = "invalid"
+    MISSING = "missing"
+
+
+class LiquidityUnitPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    verification_status: UnitVerificationStatus
+    price_unit: PriceUnit
+    volume_unit: VolumeUnit
+    price_scale_to_vnd: float | None = Field(default=None, gt=0)
+    volume_scale_to_shares: float | None = Field(default=None, gt=0)
+    traded_value_unit: TradedValueUnit = TradedValueUnit.UNAVAILABLE
+    evidence: str
+
+    @model_validator(mode="after")
+    def validate_monetary_policy(self) -> LiquidityUnitPolicy:
+        can_compute = (
+            self.verification_status is UnitVerificationStatus.VERIFIED
+            and self.price_scale_to_vnd is not None
+            and self.volume_scale_to_shares is not None
+        )
+        if self.traded_value_unit is TradedValueUnit.VND and not can_compute:
+            raise ValueError(
+                "VND traded value requires verified price and volume conversion scales."
+            )
+        if can_compute and self.traded_value_unit is not TradedValueUnit.VND:
+            raise ValueError("A fully verified monetary policy must expose traded value as VND.")
+        return self
+
+    @property
+    def can_compute_vnd(self) -> bool:
+        return self.traded_value_unit is TradedValueUnit.VND
+
+
+class LiquidityScreenConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    window_weekdays: int = Field(default=20, ge=1)
+    min_history_observations: int = Field(default=15, ge=1)
+    min_trading_frequency: float | None = Field(default=0.8, ge=0, le=1)
+    max_zero_volume_frequency: float | None = Field(default=0.2, ge=0, le=1)
+    min_average_volume_provider_units: float | None = Field(default=None, ge=0)
+    min_average_traded_value_vnd: float | None = Field(default=None, ge=0)
+
+    @model_validator(mode="after")
+    def validate_history_window(self) -> LiquidityScreenConfig:
+        if self.min_history_observations > self.window_weekdays:
+            raise ValueError("min_history_observations cannot exceed window_weekdays.")
+        return self
+
+
+class TimestampProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    provider: str
+    original_value: str | None
+    parsed_value: datetime | None
+    awareness_status: TimestampAwarenessStatus
+    source_timezone: str | None = None
+    localization_applied: bool = False
+    interpretation: str
 
 
 class PackageInspection(BaseModel):
@@ -177,7 +296,11 @@ class DatasetManifest(BaseModel):
     finished_at_utc: datetime
     status: str
     row_counts: dict[str, int] = Field(default_factory=dict)
+    input_paths: list[str] = Field(default_factory=list)
     output_paths: list[str] = Field(default_factory=list)
+    parameters: dict[str, Any] = Field(default_factory=dict)
+    data_contract_versions: dict[str, str] = Field(default_factory=dict)
+    notes: list[str] = Field(default_factory=list)
     validation_summary: dict[str, int] = Field(default_factory=dict)
     error_summary: list[str] = Field(default_factory=list)
     package_versions: dict[str, str] = Field(default_factory=dict)
