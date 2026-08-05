@@ -17,19 +17,26 @@ from hose_quant.data.contracts import (
     ASSEMBLED_DAILY_CONTRACT_VERSION,
     DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION,
     DAILY_CAMPAIGN_CONTRACT_VERSION,
+    DAILY_CAMPAIGN_READINESS_CONTRACT_VERSION,
+    DAILY_CAMPAIGN_READINESS_POLICY_VERSION,
+    DAILY_CAMPAIGN_STATE_CONTRACT_VERSION,
     NORMALIZED_DAILY_CONTRACT_VERSION,
 )
 from hose_quant.data.coverage import audit_daily_coverage, summarize_daily_coverage
 from hose_quant.data.feature_inputs import build_daily_panel
 from hose_quant.data.models import (
+    CampaignAcceptanceStatus,
     CampaignReceiptOrigin,
     CampaignTaskStatus,
     DailyCampaignPlan,
+    DailyCampaignReadinessAssessment,
+    DailyCampaignReadinessPolicy,
     DailyCampaignReceipt,
     DailyCampaignState,
     DailyCampaignTask,
     DailyCampaignTaskAssessment,
     DailyCoverageConfig,
+    DailyCoverageStatus,
     DatasetManifest,
     ValidationResult,
     utc_now,
@@ -201,7 +208,13 @@ class DailyCampaignManager:
         }
         symbol_statuses = self._symbol_statuses(plan, assessments)
         symbol_counts = Counter(symbol_statuses.values())
-        assembly_ready = all(item.status in RESOLVED_TASK_STATUSES for item in assessments)
+        campaign_complete = all(
+            item.status in RESOLVED_TASK_STATUSES for item in assessments
+        )
+        assembly_compatible = not any(
+            item.status is CampaignTaskStatus.INCOMPATIBLE for item in assessments
+        )
+        assembly_ready = campaign_complete and assembly_compatible
         previous: DailyCampaignState | None = None
         state_path = self.storage.daily_campaign_state_path(plan.campaign_id)
         if state_path.exists():
@@ -209,6 +222,7 @@ class DailyCampaignManager:
                 state_path.read_text(encoding="utf-8")
             )
         state = DailyCampaignState(
+            state_contract_version=DAILY_CAMPAIGN_STATE_CONTRACT_VERSION,
             campaign_contract_version=plan.campaign_contract_version,
             campaign_id=plan.campaign_id,
             task_counts=task_counts,
@@ -221,21 +235,40 @@ class DailyCampaignManager:
                     and item.status in RESOLVED_TASK_STATUSES
                 }
             ),
+            campaign_complete=campaign_complete,
+            assembly_compatible=assembly_compatible,
             assembly_ready=assembly_ready,
             canonical_candidate=False,
             assembled_dataset_id=None,
             tasks=assessments,
         )
-        if previous is not None and previous.assembled_dataset_id is not None:
-            expected_id = assembled_dataset_id(plan, state)
+        if previous is not None:
+            evidence_digest = campaign_source_evidence_digest(plan, state)
+            previous_assessment = previous.readiness_assessment
             if (
-                previous.assembled_dataset_id == expected_id
-                and self.storage.assembled_daily_dataset_dir(
-                    plan.campaign_id, expected_id
-                ).exists()
+                previous_assessment is not None
+                and previous_assessment.source_evidence_digest == evidence_digest
             ):
-                state.assembled_dataset_id = expected_id
-                state.canonical_candidate = previous.canonical_candidate
+                state.readiness_assessment = previous_assessment
+                state.coverage_quality_status = (
+                    previous_assessment.coverage_quality_status
+                )
+                state.research_readiness_status = (
+                    previous_assessment.research_readiness_status
+                )
+            if previous.assembled_dataset_id is not None:
+                expected_id = assembled_dataset_id(plan, state)
+                if (
+                    previous.assembled_dataset_id == expected_id
+                    and self.storage.assembled_daily_dataset_dir(
+                        plan.campaign_id, expected_id
+                    ).exists()
+                ):
+                    state.assembled_dataset_id = expected_id
+        state.canonical_candidate = (
+            state.research_readiness_status is CampaignAcceptanceStatus.ACCEPTED
+            and state.assembled_dataset_id is not None
+        )
         self.write_state(state)
         return state
 
@@ -341,7 +374,9 @@ class DailyCampaignManager:
         self,
         plan: DailyCampaignPlan,
         *,
+        audit_run_id: str,
         coverage_config: DailyCoverageConfig,
+        readiness_policy: DailyCampaignReadinessPolicy,
         json_path: Path,
         markdown_path: Path,
     ) -> tuple[DailyCampaignState, pd.DataFrame, dict[str, Any], tuple[Path, Path]]:
@@ -378,14 +413,27 @@ class DailyCampaignManager:
         virtual_source_run_ids = sorted(
             source_rows["source_run_id"].dropna().astype(str).unique().tolist()
         ) if not source_rows.empty else []
-        policy = resolve_daily_unit_policy(coverage_input)
-        canonical_candidate = (
-            state.assembly_ready
-            and duplicate_count == 0
-            and not coverage_input.empty
-            and policy.can_compute_vnd
+        unit_policy = resolve_daily_unit_policy(coverage_input)
+        readiness = evaluate_campaign_readiness(
+            plan,
+            state,
+            coverage,
+            audit_run_id=audit_run_id,
+            coverage_config=coverage_config,
+            readiness_policy=readiness_policy,
+            source_row_count=len(source_rows),
+            duplicate_symbol_date_count=duplicate_count,
+            task_range_gap_count=0,
+            task_range_overlap_count=0,
+            vnd_traded_value_permitted=unit_policy.can_compute_vnd,
         )
-        state.canonical_candidate = canonical_candidate
+        state.readiness_assessment = readiness
+        state.coverage_quality_status = readiness.coverage_quality_status
+        state.research_readiness_status = readiness.research_readiness_status
+        state.canonical_candidate = (
+            readiness.research_readiness_status is CampaignAcceptanceStatus.ACCEPTED
+            and state.assembled_dataset_id is not None
+        )
         self.write_state(state)
         summary: dict[str, Any] = {
             "campaign_id": plan.campaign_id,
@@ -404,11 +452,16 @@ class DailyCampaignManager:
             "duplicate_symbol_date_count": duplicate_count,
             "task_range_gap_count": 0,
             "task_range_overlap_count": 0,
+            "campaign_complete": state.campaign_complete,
+            "assembly_compatible": state.assembly_compatible,
             "assembly_ready": state.assembly_ready,
-            "canonical_candidate": canonical_candidate,
+            "coverage_quality_status": state.coverage_quality_status.value,
+            "research_readiness_status": state.research_readiness_status.value,
+            "canonical_candidate": state.canonical_candidate,
             "assembled_dataset_id": state.assembled_dataset_id,
-            "unit_provenance_status": policy.provenance_status.value,
-            "vnd_traded_value_permitted": policy.vnd_traded_value_permitted,
+            "unit_provenance_status": unit_policy.provenance_status.value,
+            "vnd_traded_value_permitted": unit_policy.vnd_traded_value_permitted,
+            "readiness": readiness.model_dump(mode="json"),
             "coverage": coverage_summary,
             "known_risks": CAMPAIGN_KNOWN_RISKS,
         }
@@ -556,13 +609,27 @@ class DailyCampaignManager:
                     "row_count": len(assembled),
                     "symbol_count": int(assembled["symbol"].nunique()),
                     "source_run_ids": state.source_run_ids,
+                    "research_readiness_status_at_publication": (
+                        state.research_readiness_status.value
+                    ),
+                    "canonical_candidate_at_publication": (
+                        state.research_readiness_status
+                        is CampaignAcceptanceStatus.ACCEPTED
+                    ),
+                    "readiness_audit_run_id": (
+                        state.readiness_assessment.audit_run_id
+                        if state.readiness_assessment is not None
+                        else None
+                    ),
                 },
             )
             staging.rename(final_dir)
             output_paths = self.storage.assembled_daily_paths(plan.campaign_id, dataset_id)
             output_paths.append(final_dir / "dataset.json")
         state.assembled_dataset_id = dataset_id
-        state.canonical_candidate = resolve_daily_unit_policy(normalized).can_compute_vnd
+        state.canonical_candidate = (
+            state.research_readiness_status is CampaignAcceptanceStatus.ACCEPTED
+        )
         self.write_state(state)
         return (
             dataset_id,
@@ -950,6 +1017,185 @@ class DailyCampaignManager:
         return {symbol for symbol, status in statuses.items() if status == "complete"}
 
 
+def campaign_source_evidence_digest(
+    plan: DailyCampaignPlan,
+    state: DailyCampaignState,
+) -> str:
+    task_evidence = [
+        {
+            "task_id": task.task_id,
+            "status": task.status.value,
+            "selected_run_id": task.selected_run_id,
+            "observation_count": task.observation_count,
+            "first_observation_date": (
+                task.first_observation_date.isoformat()
+                if task.first_observation_date is not None
+                else None
+            ),
+            "last_observation_date": (
+                task.last_observation_date.isoformat()
+                if task.last_observation_date is not None
+                else None
+            ),
+            "reason_codes": task.reason_codes,
+        }
+        for task in state.tasks
+    ]
+    payload = {
+        "campaign_id": plan.campaign_id,
+        "campaign_contract_version": plan.campaign_contract_version,
+        "normalized_daily_contract_version": plan.normalized_daily_contract_version,
+        "task_evidence": task_evidence,
+    }
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def evaluate_campaign_readiness(
+    plan: DailyCampaignPlan,
+    state: DailyCampaignState,
+    coverage: pd.DataFrame,
+    *,
+    audit_run_id: str,
+    coverage_config: DailyCoverageConfig,
+    readiness_policy: DailyCampaignReadinessPolicy,
+    source_row_count: int,
+    duplicate_symbol_date_count: int,
+    task_range_gap_count: int,
+    task_range_overlap_count: int,
+    vnd_traded_value_permitted: bool,
+) -> DailyCampaignReadinessAssessment:
+    if readiness_policy.policy_version != DAILY_CAMPAIGN_READINESS_POLICY_VERSION:
+        raise ValueError(
+            f"Unsupported campaign readiness policy: {readiness_policy.policy_version}."
+        )
+
+    universe_symbol_count = len(plan.symbols)
+    coverage_symbols = set(coverage["symbol"].dropna().astype(str))
+    status_counts = {
+        status.value: int((coverage["coverage_status"] == status.value).sum())
+        for status in DailyCoverageStatus
+    }
+    vnd_usable_count = status_counts[DailyCoverageStatus.USABLE_VND.value]
+    absent_count = status_counts[DailyCoverageStatus.ABSENT.value]
+    rejected_statuses = {
+        DailyCoverageStatus.NOT_INGESTED,
+        DailyCoverageStatus.BLOCKING_QUALITY_ISSUES,
+        DailyCoverageStatus.STALE,
+        DailyCoverageStatus.INSUFFICIENT_HISTORY,
+        DailyCoverageStatus.SPARSE,
+        DailyCoverageStatus.USABLE_NON_MONETARY,
+    }
+    rejected_coverage_count = sum(
+        status_counts[status.value] for status in rejected_statuses
+    )
+    vnd_usable_ratio = (
+        vnd_usable_count / universe_symbol_count if universe_symbol_count else 0.0
+    )
+    absent_ratio = absent_count / universe_symbol_count if universe_symbol_count else 0.0
+    coverage_summary = summarize_daily_coverage(coverage)
+    common_overlap = bool(coverage_summary["common_vnd_overlap_available"])
+    source_rows_present = source_row_count > 0
+    source_symbol_dates_unique = duplicate_symbol_date_count == 0
+    task_ranges_valid = task_range_gap_count == 0 and task_range_overlap_count == 0
+    structural_assembly_compatible = (
+        state.assembly_compatible
+        and source_rows_present
+        and source_symbol_dates_unique
+        and task_ranges_valid
+    )
+    criteria = {
+        "campaign_complete": state.campaign_complete,
+        "task_sources_assembly_compatible": state.assembly_compatible,
+        "source_rows_present": source_rows_present,
+        "source_symbol_dates_unique": source_symbol_dates_unique,
+        "task_ranges_contiguous_non_overlapping": task_ranges_valid,
+        "structural_assembly_compatible": structural_assembly_compatible,
+        "full_universe_coverage_audited": (
+            len(coverage) == universe_symbol_count
+            and coverage_symbols == set(plan.symbols)
+        ),
+        "no_rejected_coverage_statuses": rejected_coverage_count == 0,
+        "minimum_vnd_usable_symbol_ratio": (
+            vnd_usable_ratio >= readiness_policy.min_vnd_usable_symbol_ratio
+        ),
+        "maximum_absent_symbol_ratio": (
+            absent_ratio <= readiness_policy.max_absent_symbol_ratio
+        ),
+        "common_vnd_date_overlap": (
+            common_overlap or not readiness_policy.require_common_vnd_date_overlap
+        ),
+        "vnd_unit_provenance_permitted": vnd_traded_value_permitted,
+    }
+    coverage_criteria = [
+        "full_universe_coverage_audited",
+        "source_symbol_dates_unique",
+        "no_rejected_coverage_statuses",
+        "minimum_vnd_usable_symbol_ratio",
+        "maximum_absent_symbol_ratio",
+        "common_vnd_date_overlap",
+        "vnd_unit_provenance_permitted",
+    ]
+    coverage_accepted = all(criteria[name] for name in coverage_criteria)
+    research_ready = (
+        criteria["campaign_complete"]
+        and criteria["structural_assembly_compatible"]
+        and coverage_accepted
+    )
+    reason_by_criterion = {
+        "campaign_complete": "campaign_incomplete",
+        "task_sources_assembly_compatible": "task_sources_assembly_incompatible",
+        "source_rows_present": "campaign_source_rows_missing",
+        "source_symbol_dates_unique": "duplicate_symbol_date_rows_present",
+        "task_ranges_contiguous_non_overlapping": "task_range_gap_or_overlap_present",
+        "structural_assembly_compatible": "structural_assembly_incompatible",
+        "full_universe_coverage_audited": "full_universe_coverage_not_audited",
+        "no_rejected_coverage_statuses": "rejected_coverage_statuses_present",
+        "minimum_vnd_usable_symbol_ratio": "vnd_usable_symbol_ratio_below_minimum",
+        "maximum_absent_symbol_ratio": "absent_symbol_ratio_above_maximum",
+        "common_vnd_date_overlap": "common_vnd_date_overlap_missing",
+        "vnd_unit_provenance_permitted": "vnd_unit_provenance_not_permitted",
+    }
+    reason_codes = [
+        reason_by_criterion[name] for name, passed in criteria.items() if not passed
+    ]
+    metrics: dict[str, int | float | bool] = {
+        "universe_symbol_count": universe_symbol_count,
+        "audited_symbol_count": len(coverage),
+        "source_row_count": source_row_count,
+        "duplicate_symbol_date_count": duplicate_symbol_date_count,
+        "task_range_gap_count": task_range_gap_count,
+        "task_range_overlap_count": task_range_overlap_count,
+        "vnd_usable_symbol_count": vnd_usable_count,
+        "vnd_usable_symbol_ratio": vnd_usable_ratio,
+        "absent_symbol_count": absent_count,
+        "absent_symbol_ratio": absent_ratio,
+        "rejected_coverage_symbol_count": rejected_coverage_count,
+        "common_vnd_date_overlap_available": common_overlap,
+    }
+    return DailyCampaignReadinessAssessment(
+        readiness_contract_version=DAILY_CAMPAIGN_READINESS_CONTRACT_VERSION,
+        audit_run_id=audit_run_id,
+        source_evidence_digest=campaign_source_evidence_digest(plan, state),
+        coverage_config=coverage_config,
+        policy=readiness_policy,
+        coverage_quality_status=(
+            CampaignAcceptanceStatus.ACCEPTED
+            if coverage_accepted
+            else CampaignAcceptanceStatus.REJECTED
+        ),
+        research_readiness_status=(
+            CampaignAcceptanceStatus.ACCEPTED
+            if research_ready
+            else CampaignAcceptanceStatus.REJECTED
+        ),
+        criteria=criteria,
+        metrics=metrics,
+        reason_codes=reason_codes,
+        known_risks=CAMPAIGN_KNOWN_RISKS,
+    )
+
+
 def assembled_dataset_id(plan: DailyCampaignPlan, state: DailyCampaignState) -> str:
     mapping = [
         {
@@ -984,6 +1230,11 @@ def write_campaign_audit_report(
         "audit_contract_version": DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION,
         "plan": plan.model_dump(mode="json"),
         "summary": summary,
+        "readiness_assessment": (
+            state.readiness_assessment.model_dump(mode="json")
+            if state.readiness_assessment is not None
+            else None
+        ),
         "tasks": [item.model_dump(mode="json") for item in state.tasks],
         "coverage": json.loads(coverage.to_json(orient="records", date_format="iso")),
     }
@@ -1004,7 +1255,11 @@ def write_campaign_audit_report(
         f"| Complete symbols | {summary['complete_symbol_count']} |",
         f"| Virtual source rows | {summary['virtual_source_row_count']} |",
         f"| Duplicate symbol/date rows | {summary['duplicate_symbol_date_count']} |",
+        f"| Campaign complete | {summary['campaign_complete']} |",
+        f"| Assembly compatible | {summary['assembly_compatible']} |",
         f"| Assembly ready | {summary['assembly_ready']} |",
+        f"| Coverage-quality status | {summary['coverage_quality_status']} |",
+        f"| Research-readiness status | {summary['research_readiness_status']} |",
         f"| Canonical candidate | {summary['canonical_candidate']} |",
         "",
         "## Task Status",
@@ -1025,6 +1280,42 @@ def write_campaign_audit_report(
     )
     for symbol, status in sorted(symbol_statuses.items()):
         lines.append(f"| {symbol} | {status} |")
+    readiness = state.readiness_assessment
+    if readiness is not None:
+        lines.extend(
+            [
+                "",
+                "## Research Readiness Policy",
+                "",
+                f"- Contract: `{readiness.readiness_contract_version}`",
+                f"- Policy: `{readiness.policy.policy_version}`",
+                f"- Scope: `{readiness.policy.research_scope}`",
+                "- Minimum VND-usable symbol ratio: "
+                f"`{readiness.policy.min_vnd_usable_symbol_ratio}`",
+                "- Maximum absent symbol ratio: "
+                f"`{readiness.policy.max_absent_symbol_ratio}`",
+                "- Common VND date overlap required: "
+                f"`{readiness.policy.require_common_vnd_date_overlap}`",
+                "",
+                "## Readiness Criteria",
+                "",
+                "| Criterion | Passed |",
+                "| --- | --- |",
+            ]
+        )
+        for criterion, passed in readiness.criteria.items():
+            lines.append(f"| {criterion} | {passed} |")
+        lines.extend(
+            [
+                "",
+                "Rejection reasons: "
+                + (
+                    ", ".join(f"`{reason}`" for reason in readiness.reason_codes)
+                    if readiness.reason_codes
+                    else "None."
+                ),
+            ]
+        )
     lines.extend(
         [
             "",

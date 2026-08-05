@@ -1,8 +1,8 @@
 # Feature Input Layer
 
-Phase 2 converts local normalized Parquet into versioned, research-ready inputs. It does not
-fetch live data or implement features, labels, strategies, backtests, portfolios, execution, ML,
-or UI code.
+Phase 2 converts local normalized Parquet into versioned research-input candidates with explicit
+usability and readiness evidence. It does not fetch live data or implement features, labels,
+strategies, backtests, portfolios, execution, ML, or UI code.
 
 ## Architecture
 
@@ -17,8 +17,9 @@ The layer extends the existing data architecture instead of creating a second pi
 - `validators.py` enforces contract invariants and returns existing structured validation models.
 - `workflows.py`, `storage.py`, and `manifests.py` provide local I/O and provenance through the
   same mechanisms as Phase 1.
-- `campaigns.py` reconstructs immutable symbol/chunk campaign state, audits compatible sources,
-  and assembles `assembled-daily-v1` only after every task is resolved.
+- `campaigns.py` reconstructs immutable symbol/chunk campaign state, audits coverage and quality
+  under a versioned readiness policy, and assembles `assembled-daily-v1` only after every task is
+  resolved. Assembly alone does not confer research readiness.
 
 The canonical daily feature input is long-form, keyed and ordered by `symbol,date`. Long form
 preserves sparse observations without inventing bars and fits the existing symbol-partitioned

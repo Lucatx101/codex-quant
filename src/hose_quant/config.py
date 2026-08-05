@@ -52,6 +52,18 @@ class AppSettings(BaseSettings):
         ge=1,
         validation_alias="CAMPAIGN_MAX_TASKS_PER_RUN",
     )
+    campaign_readiness_min_vnd_usable_symbol_ratio: float = Field(
+        default=1.0,
+        ge=0,
+        le=1,
+        validation_alias="CAMPAIGN_READINESS_MIN_VND_USABLE_SYMBOL_RATIO",
+    )
+    campaign_readiness_max_absent_symbol_ratio: float = Field(
+        default=0.0,
+        ge=0,
+        le=1,
+        validation_alias="CAMPAIGN_READINESS_MAX_ABSENT_SYMBOL_RATIO",
+    )
     liquidity_window_weekdays: int = Field(
         default=20, ge=1, validation_alias="LIQUIDITY_WINDOW_WEEKDAYS"
     )
@@ -136,6 +148,12 @@ class AppSettings(BaseSettings):
             "max_live_provider_calls": self.max_live_provider_calls,
             "daily_backfill_chunk_calendar_days": self.daily_backfill_chunk_calendar_days,
             "campaign_max_tasks_per_run": self.campaign_max_tasks_per_run,
+            "campaign_readiness_min_vnd_usable_symbol_ratio": (
+                self.campaign_readiness_min_vnd_usable_symbol_ratio
+            ),
+            "campaign_readiness_max_absent_symbol_ratio": (
+                self.campaign_readiness_max_absent_symbol_ratio
+            ),
             "liquidity_window_weekdays": self.liquidity_window_weekdays,
             "liquidity_min_history_observations": self.liquidity_min_history_observations,
             "liquidity_min_trading_frequency": self.liquidity_min_trading_frequency,

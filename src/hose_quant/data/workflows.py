@@ -18,6 +18,8 @@ from hose_quant.data.contracts import (
     AVAILABILITY_CONTRACT_VERSION,
     DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION,
     DAILY_CAMPAIGN_CONTRACT_VERSION,
+    DAILY_CAMPAIGN_READINESS_CONTRACT_VERSION,
+    DAILY_CAMPAIGN_STATE_CONTRACT_VERSION,
     DAILY_COVERAGE_CONTRACT_VERSION,
     DAILY_PANEL_CONTRACT_VERSION,
     LIQUIDITY_CONTRACT_VERSION,
@@ -45,9 +47,11 @@ from hose_quant.data.feature_inputs import (
 from hose_quant.data.manifests import build_manifest, create_run_id, write_manifest
 from hose_quant.data.market_time import aware_timestamp_to_utc
 from hose_quant.data.models import (
+    CampaignAcceptanceStatus,
     CampaignReceiptOrigin,
     CampaignTaskStatus,
     DailyCampaignPlan,
+    DailyCampaignReadinessPolicy,
     DailyCampaignReceipt,
     DailyCoverageConfig,
     LiquidityScreenConfig,
@@ -1228,6 +1232,7 @@ class DataWorkflow:
             },
             data_contract_versions={
                 "daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION,
+                "daily_campaign_state": DAILY_CAMPAIGN_STATE_CONTRACT_VERSION,
                 "normalized_daily": NORMALIZED_DAILY_CONTRACT_VERSION,
             },
             notes=[
@@ -1313,7 +1318,10 @@ class DataWorkflow:
             ],
             output_paths=output_paths,
             parameters={"campaign_id": campaign_id, "daily_run_id": daily_run_id},
-            data_contract_versions={"daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION},
+            data_contract_versions={
+                "daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION,
+                "daily_campaign_state": DAILY_CAMPAIGN_STATE_CONTRACT_VERSION,
+            },
             validation_results=validation_results,
         )
         manifest_path = write_manifest(manifest, self.storage.manifest_root)
@@ -1476,6 +1484,7 @@ class DataWorkflow:
             },
             data_contract_versions={
                 "daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION,
+                "daily_campaign_state": DAILY_CAMPAIGN_STATE_CONTRACT_VERSION,
                 "normalized_daily": NORMALIZED_DAILY_CONTRACT_VERSION,
             },
             notes=[
@@ -1497,16 +1506,27 @@ class DataWorkflow:
         *,
         campaign_id: str,
         config: DailyCoverageConfig,
+        readiness_policy: DailyCampaignReadinessPolicy | None = None,
     ) -> WorkflowResult:
         started = utc_now()
         run_id = _campaign_operation_run_id("audit-daily-campaign", started)
         manager = DailyCampaignManager(self.storage)
         plan = manager.load_plan(campaign_id)
+        effective_readiness_policy = readiness_policy or DailyCampaignReadinessPolicy(
+            min_vnd_usable_symbol_ratio=(
+                self.settings.campaign_readiness_min_vnd_usable_symbol_ratio
+            ),
+            max_absent_symbol_ratio=(
+                self.settings.campaign_readiness_max_absent_symbol_ratio
+            ),
+        )
         report_root = self.settings.report_dir / "data_quality" / "campaigns" / campaign_id
         with manager.lock(campaign_id):
             state, coverage, summary, report_paths = manager.audit(
                 plan,
+                audit_run_id=run_id,
                 coverage_config=config,
+                readiness_policy=effective_readiness_policy,
                 json_path=report_root / f"{run_id}.json",
                 markdown_path=report_root / f"{run_id}.md",
             )
@@ -1535,6 +1555,29 @@ class DataWorkflow:
         validation_results = validate_daily_coverage(
             coverage,
             expected_symbol_count=len(plan.symbols),
+        )
+        validation_results.append(
+            ValidationResult(
+                dataset_name="daily_campaign_readiness",
+                severity=(
+                    ValidationSeverity.INFO
+                    if state.research_readiness_status
+                    is CampaignAcceptanceStatus.ACCEPTED
+                    else ValidationSeverity.WARNING
+                ),
+                check_name="campaign_research_readiness",
+                message=(
+                    "Campaign research-readiness policy accepted."
+                    if state.research_readiness_status
+                    is CampaignAcceptanceStatus.ACCEPTED
+                    else "Campaign research-readiness policy rejected: "
+                    + ", ".join(
+                        state.readiness_assessment.reason_codes
+                        if state.readiness_assessment is not None
+                        else ["readiness_not_assessed"]
+                    )
+                ),
+            )
         )
         output_paths = list(report_paths)
         if not has_blocking_errors(validation_results):
@@ -1575,6 +1618,13 @@ class DataWorkflow:
                 "vnd_liquidity_usable_symbols": int(
                     summary["coverage"]["vnd_liquidity_usable_symbol_count"]
                 ),
+                "coverage_quality_accepted": int(
+                    state.coverage_quality_status is CampaignAcceptanceStatus.ACCEPTED
+                ),
+                "research_ready": int(
+                    state.research_readiness_status is CampaignAcceptanceStatus.ACCEPTED
+                ),
+                "canonical_candidate": int(state.canonical_candidate),
             },
             input_paths=sorted(
                 {
@@ -1592,18 +1642,34 @@ class DataWorkflow:
             parameters={
                 "campaign_id": campaign_id,
                 "coverage_config": config.model_dump(mode="json"),
+                "readiness_policy": effective_readiness_policy.model_dump(mode="json"),
                 "task_counts": state.task_counts,
                 "symbol_counts": state.symbol_counts,
+                "campaign_complete": state.campaign_complete,
+                "assembly_compatible": state.assembly_compatible,
                 "assembly_ready": state.assembly_ready,
+                "coverage_quality_status": state.coverage_quality_status.value,
+                "research_readiness_status": state.research_readiness_status.value,
                 "canonical_candidate": state.canonical_candidate,
+                "readiness_reason_codes": (
+                    state.readiness_assessment.reason_codes
+                    if state.readiness_assessment is not None
+                    else ["readiness_not_assessed"]
+                ),
             },
             unit_provenance=unit_policy,
             data_contract_versions={
                 "daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION,
+                "daily_campaign_state": DAILY_CAMPAIGN_STATE_CONTRACT_VERSION,
                 "daily_campaign_audit": DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION,
+                "daily_campaign_readiness": DAILY_CAMPAIGN_READINESS_CONTRACT_VERSION,
                 "daily_coverage": DAILY_COVERAGE_CONTRACT_VERSION,
             },
-            notes=CAMPAIGN_KNOWN_RISKS,
+            notes=[
+                "Audit success means evidence was evaluated; it does not mean the readiness "
+                "policy accepted the campaign.",
+                *CAMPAIGN_KNOWN_RISKS,
+            ],
             validation_results=validation_results,
         )
         manifest_path = write_manifest(manifest, self.storage.manifest_root)
@@ -1643,6 +1709,8 @@ class DataWorkflow:
                 parameters={"campaign_id": campaign_id},
                 contract_versions={
                     "daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION,
+                    "daily_campaign_state": DAILY_CAMPAIGN_STATE_CONTRACT_VERSION,
+                    "daily_campaign_readiness": DAILY_CAMPAIGN_READINESS_CONTRACT_VERSION,
                     "assembled_daily": ASSEMBLED_DAILY_CONTRACT_VERSION,
                 },
             )
@@ -1684,17 +1752,31 @@ class DataWorkflow:
             parameters={
                 "campaign_id": campaign_id,
                 "assembled_dataset_id": dataset_id,
+                "campaign_complete": state.campaign_complete,
+                "assembly_compatible": state.assembly_compatible,
+                "assembly_ready": state.assembly_ready,
+                "coverage_quality_status": state.coverage_quality_status.value,
+                "research_readiness_status": state.research_readiness_status.value,
                 "canonical_candidate": state.canonical_candidate,
+                "readiness_audit_run_id": (
+                    state.readiness_assessment.audit_run_id
+                    if state.readiness_assessment is not None
+                    else None
+                ),
             },
             unit_provenance=unit_policy,
             data_contract_versions={
                 "daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION,
+                "daily_campaign_state": DAILY_CAMPAIGN_STATE_CONTRACT_VERSION,
+                "daily_campaign_readiness": DAILY_CAMPAIGN_READINESS_CONTRACT_VERSION,
                 "normalized_daily": NORMALIZED_DAILY_CONTRACT_VERSION,
                 "assembled_daily": ASSEMBLED_DAILY_CONTRACT_VERSION,
             },
             notes=[
                 "Assembly preserves observed rows only and retains source lineage per row.",
-                "Canonical candidate does not verify historical membership or price adjustment.",
+                "Successful assembly does not grant research readiness or canonical candidacy.",
+                "Canonical candidacy requires an accepted readiness audit over unchanged "
+                "campaign source evidence.",
                 *CAMPAIGN_KNOWN_RISKS,
             ],
             validation_results=validation_results,

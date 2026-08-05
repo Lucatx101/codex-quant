@@ -8,7 +8,8 @@ Phase 0 bootstrapped the repository and implemented a reproducible `vnstock` cap
 
 Phase 1 adds the provider data foundation. Phase 2 adds a local-only feature-input layer, and
 Phase 2.2 hardens daily re-ingestion and coverage auditing. Phase 2.3 adds a resumable,
-universe-scale ingestion campaign and safe dataset assembly:
+universe-scale ingestion campaign and safe dataset assembly. Phase 2.3.1 separates structural
+assembly from explicit research-readiness acceptance:
 
 - small-universe daily OHLCV backfills;
 - small-universe intraday fetches;
@@ -27,6 +28,8 @@ universe-scale ingestion campaign and safe dataset assembly:
 - provider-limited batches with interruption recovery and explicit retry controls;
 - campaign-level virtual coverage and compatibility audits;
 - deterministic, atomic, versioned assembly with row-level source lineage;
+- versioned campaign-level coverage-quality policy and readiness evidence;
+- canonical candidacy only after an accepted matching audit and assembly;
 - explicit market-time, adjustment, unit, and point-in-time uncertainty.
 
 No strategy, signal, label, backtesting, machine-learning, live trading, portfolio construction,

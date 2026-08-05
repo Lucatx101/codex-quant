@@ -12,8 +12,10 @@ from hose_quant.config import PROJECT_ROOT, AppSettings
 from hose_quant.data.campaigns import DailyCampaignManager
 from hose_quant.data.manifests import build_manifest, write_manifest
 from hose_quant.data.models import (
+    CampaignAcceptanceStatus,
     CampaignReceiptOrigin,
     CampaignTaskStatus,
+    DailyCampaignReadinessPolicy,
     DailyCampaignReceipt,
     DailyCampaignState,
     DailyCoverageConfig,
@@ -197,6 +199,9 @@ def test_campaign_resumes_empty_tasks_audits_and_assembles_idempotently(
     )
     assert audit.manifest.status == "success"
     assert audit.manifest.parameters["assembly_ready"] is True
+    assert audit.manifest.parameters["coverage_quality_status"] == "rejected"
+    assert audit.manifest.parameters["research_readiness_status"] == "rejected"
+    assert audit.manifest.parameters["canonical_candidate"] is False
     assert audit.manifest.row_counts["vnd_liquidity_usable_symbols"] == 1
     report_path = next(
         Path(path) for path in audit.manifest.output_paths if path.endswith(".json")
@@ -208,6 +213,13 @@ def test_campaign_resumes_empty_tasks_audits_and_assembles_idempotently(
         "absent": 1,
         "usable_vnd": 1,
     }
+    assert report["audit_contract_version"] == "daily-campaign-audit-v2"
+    assert report["readiness_assessment"]["criteria"][
+        "minimum_vnd_usable_symbol_ratio"
+    ] is False
+    assert report["readiness_assessment"]["criteria"][
+        "maximum_absent_symbol_ratio"
+    ] is False
 
     assembled = workflow.assemble_daily_campaign(campaign_id="hose-daily-test")
     assert assembled.manifest.status == "success"
@@ -222,10 +234,97 @@ def test_campaign_resumes_empty_tasks_audits_and_assembles_idempotently(
     assert set(frame["campaign_id"]) == {"hose-daily-test"}
     assert set(frame["assembled_dataset_id"]) == {dataset_id}
     assert frame["source_run_id"].notna().all()
+    assert assembled.manifest.parameters["research_readiness_status"] == "rejected"
+    assert assembled.manifest.parameters["canonical_candidate"] is False
 
     repeated = workflow.assemble_daily_campaign(campaign_id="hose-daily-test")
     assert repeated.manifest.status == "success"
     assert repeated.manifest.parameters["assembled_dataset_id"] == dataset_id
+    assert repeated.manifest.parameters["canonical_candidate"] is False
+
+
+def test_assembly_never_grants_readiness_but_accepted_audit_can_mark_candidate(
+    tmp_path: Path,
+) -> None:
+    settings = _settings(tmp_path, max_tasks=2)
+    provider = CampaignProvider()
+    workflow = DataWorkflow(settings, provider=provider)  # type: ignore[arg-type]
+    _write_universe(workflow.storage, ["FPT", "HPG"])
+    _init_campaign(
+        workflow,
+        campaign_id="readiness-test",
+        start=date(2026, 7, 6),
+        end=date(2026, 7, 10),
+        chunk_days=5,
+    )
+    completed = workflow.run_daily_campaign(campaign_id="readiness-test", max_tasks=2)
+    assert completed.manifest.status == "success"
+
+    assembled = workflow.assemble_daily_campaign(campaign_id="readiness-test")
+    assert assembled.manifest.status == "success"
+    assert assembled.manifest.parameters["coverage_quality_status"] == "not_assessed"
+    assert assembled.manifest.parameters["research_readiness_status"] == "not_assessed"
+    assert assembled.manifest.parameters["canonical_candidate"] is False
+
+    audit = workflow.audit_daily_campaign(
+        campaign_id="readiness-test",
+        config=DailyCoverageConfig(
+            min_history_observations=1,
+            min_span_coverage_ratio=0.5,
+            stale_after_calendar_days=7,
+            max_zero_volume_frequency=0.2,
+        ),
+    )
+    assert audit.manifest.status == "success"
+    assert audit.manifest.parameters["coverage_quality_status"] == "accepted"
+    assert audit.manifest.parameters["research_readiness_status"] == "accepted"
+    assert audit.manifest.parameters["canonical_candidate"] is True
+
+    state = DailyCampaignManager(workflow.storage).assess(
+        DailyCampaignManager(workflow.storage).load_plan("readiness-test")
+    )
+    assert state.coverage_quality_status is CampaignAcceptanceStatus.ACCEPTED
+    assert state.research_readiness_status is CampaignAcceptanceStatus.ACCEPTED
+    assert state.canonical_candidate is True
+    assert state.readiness_assessment is not None
+    assert state.readiness_assessment.audit_run_id == audit.manifest.run_id
+
+
+def test_readiness_policy_records_explicit_bounded_absence_override(tmp_path: Path) -> None:
+    settings = _settings(tmp_path, max_tasks=2)
+    provider = CampaignProvider(empty_symbols={"HPG"})
+    workflow = DataWorkflow(settings, provider=provider)  # type: ignore[arg-type]
+    _write_universe(workflow.storage, ["FPT", "HPG"])
+    _init_campaign(
+        workflow,
+        campaign_id="bounded-absence-test",
+        start=date(2026, 7, 6),
+        end=date(2026, 7, 10),
+        chunk_days=5,
+    )
+    workflow.run_daily_campaign(campaign_id="bounded-absence-test", max_tasks=2)
+
+    audit = workflow.audit_daily_campaign(
+        campaign_id="bounded-absence-test",
+        config=DailyCoverageConfig(
+            min_history_observations=1,
+            min_span_coverage_ratio=0.5,
+            stale_after_calendar_days=7,
+            max_zero_volume_frequency=0.2,
+        ),
+        readiness_policy=DailyCampaignReadinessPolicy(
+            min_vnd_usable_symbol_ratio=0.5,
+            max_absent_symbol_ratio=0.5,
+        ),
+    )
+    assert audit.manifest.parameters["research_readiness_status"] == "accepted"
+    assert audit.manifest.parameters["readiness_policy"] == {
+        "policy_version": "campaign-research-readiness-policy-v1",
+        "research_scope": "raw_ohlcv_and_vnd_liquidity",
+        "min_vnd_usable_symbol_ratio": 0.5,
+        "max_absent_symbol_ratio": 0.5,
+        "require_common_vnd_date_overlap": True,
+    }
 
 
 def test_failed_task_requires_explicit_retry_and_then_completes(tmp_path: Path) -> None:
@@ -502,3 +601,24 @@ def test_campaign_cli_dry_run_is_offline_but_live_run_requires_key(
     live_output = capsys.readouterr()
     assert live_exit == 2
     assert "VNSTOCK_API_KEY is required" in live_output.err
+
+    audit_exit = cli.main(
+        [
+            "data",
+            "audit-daily-campaign",
+            "--campaign-id",
+            "cli-test",
+            "--min-history-observations",
+            "1",
+            "--min-vnd-usable-symbol-ratio",
+            "0.5",
+            "--max-absent-symbol-ratio",
+            "0.5",
+        ]
+    )
+    audit_output = capsys.readouterr()
+    assert audit_exit == 0
+    assert "Campaign complete: False" in audit_output.out
+    assert "Coverage-quality status: rejected" in audit_output.out
+    assert "Research-readiness status: rejected" in audit_output.out
+    assert "Canonical candidate: False" in audit_output.out

@@ -64,7 +64,10 @@ A task key is `SYMBOL__YYYY-MM-DD__YYYY-MM-DD`. Each provider attempt remains an
 `data backfill-daily` run with raw evidence, an all-or-nothing normalized publication, and its own
 manifest. A tiny receipt links that source run to one campaign task. `state.json` is a derived
 index, not the source of truth: it is rebuilt from the immutable plan, receipts, child manifests,
-and normalized files.
+and normalized files. `daily-campaign-state-v2` records completion, task-source assembly
+compatibility, coverage-quality acceptance, research readiness, and canonical candidacy as
+separate facts. A readiness assessment is retained only while its task/source evidence digest
+still matches the reconstructed state.
 
 Task status is one of:
 
@@ -78,6 +81,19 @@ Task status is one of:
 
 At symbol level, a mixture of resolved and unresolved chunks is `partial`. A symbol is `complete`
 only when all its tasks are `complete` or provider-confirmed `empty`.
+
+Campaign-level state has intentionally narrower meanings:
+
+- `campaign_complete`: every task is `complete` or `empty`;
+- `assembly_compatible`: no attached task source is currently `incompatible`; this can be true
+  while a campaign is incomplete;
+- `assembly_ready`: campaign completion and task-source compatibility both hold; assembly still
+  performs its row-level uniqueness, overlap, validation, and atomic-publication checks;
+- `coverage_quality_status`: `not_assessed`, `accepted`, or `rejected` by the latest matching
+  readiness audit;
+- `research_readiness_status`: the coverage-quality decision combined with completion and full
+  structural assembly evidence;
+- `canonical_candidate`: research readiness is accepted and the matching assembled dataset exists.
 
 ## Commands
 
@@ -135,6 +151,17 @@ python3 -m hose_quant.cli data audit-daily-campaign \
   --campaign-id hose-daily-20260805
 ```
 
+The default campaign-level acceptance policy is deliberately strict: every universe symbol must
+be `usable_vnd`, no symbol may be provider-confirmed absent, and the usable symbols must have a
+common date overlap. Any exception must be explicit and is written into the report and manifest:
+
+```bash
+python3 -m hose_quant.cli data audit-daily-campaign \
+  --campaign-id hose-daily-20260805 \
+  --min-vnd-usable-symbol-ratio 0.98 \
+  --max-absent-symbol-ratio 0.02
+```
+
 Assembly is a separate local command and is refused until every task resolves:
 
 ```bash
@@ -182,23 +209,45 @@ declare the current contract and semantics because no rows exist to validate str
 An incompatible adoption attempt retains receipts so the affected tasks and reason codes remain
 visible, but those sources cannot enter coverage or assembly.
 
-## Campaign Audit
+## Campaign Audit And Readiness
 
-The `daily-campaign-audit-v1` report contains the immutable plan, every task assessment, symbol
+The `daily-campaign-audit-v2` report contains the immutable plan, every task assessment, symbol
 status, source runs, provider-call-independent coverage rows, task/range overlap facts, duplicate
-counts, and known risks. It forms a virtual daily source from complete symbols only. Unresolved
-symbols remain visible as `not_ingested`; provider-confirmed empty symbols become `absent`.
+counts, the exact `DailyCoverageConfig`, the campaign readiness policy, every pass/fail criterion,
+metrics, reason codes, evidence digest, and known risks. It forms a virtual daily source from
+complete symbols only. Unresolved symbols remain visible as `not_ingested`; provider-confirmed
+empty symbols become `absent`.
 
-`canonical_candidate=true` means only that all tasks resolved, compatible source rows are unique,
-and those rows have one registered VND-capable unit provenance. Coverage status still determines
-which individual symbols pass raw OHLCV and VND-liquidity thresholds. The flag does not establish:
+Coverage statuses continue to enforce minimum history, observed-span weekday coverage, staleness,
+zero-volume frequency, blocking OHLCV quality checks, and row-level VND provenance. The campaign
+policy then requires all of the following before research readiness is accepted:
+
+- the full immutable universe has exactly one coverage row;
+- no symbol is `not_ingested`, `blocking_quality_issues`, `stale`, `insufficient_history`,
+  `sparse`, or `usable_non_monetary`;
+- the `usable_vnd` symbol ratio meets the recorded minimum;
+- the `absent` symbol ratio does not exceed the recorded maximum;
+- a common VND-usable date overlap exists unless the recorded policy explicitly disables it;
+- source rows exist, are unique by `symbol,date`, and retain VND permission;
+- campaign completion and structural assembly compatibility are both satisfied.
+
+Audit command success means the evidence was evaluated and written. It does not mean the policy
+accepted the campaign. `coverage_quality_status=rejected` and
+`research_readiness_status=rejected` are valid, successful audit outcomes with reason codes.
+
+An accepted readiness audit can make an already assembled matching dataset a
+`canonical_candidate`. If assembly has not happened, the campaign can be research-ready while
+`canonical_candidate=false`; assembly then activates the candidate without changing the audit
+decision. Assembly performed before any accepted matching audit remains `not_assessed` and cannot
+grant itself readiness. This bounded candidate scope is `raw_ohlcv_and_vnd_liquidity`; it does not
+establish:
 
 - historical point-in-time membership or survivorship safety;
 - listing, delisting, halt, or active-tradability history;
 - adjusted-price semantics or corporate-action completeness;
 - a complete Vietnamese exchange holiday calendar.
 
-Those limitations stay structural in coverage outputs and written reports.
+Those limitations stay explicit in state, coverage outputs, reports, manifests, and documentation.
 
 ## Assembly Rules
 
@@ -212,6 +261,10 @@ Those limitations stay structural in coverage outputs and written reports.
 6. derives a deterministic dataset ID from the immutable plan and selected task sources;
 7. writes symbol Parquet plus metadata to a staging directory and atomically renames it;
 8. validates an existing same-ID publication against deterministic content on repeated assembly.
+
+Assembly never changes a rejected or unassessed readiness decision to accepted. Dataset metadata
+captures the readiness status and audit run at publication time, while current candidate status
+remains in reconstructible campaign state and the latest matching audit evidence.
 
 Outputs are versioned and generated:
 
@@ -227,8 +280,8 @@ reports/data_quality/campaigns/<campaign-id>/<audit-run-id>.md
 data/manifests/<operation-run-id>.json
 ```
 
-There is no mutable `latest` or canonical alias in Phase 2.3. Publication makes a dataset eligible
-for deliberate promotion in a later research phase; it does not promote it automatically.
+There is no mutable `latest` or canonical alias. `canonical_candidate=true` is an auditable
+eligibility status for the bounded research scope, not automatic promotion or a filesystem alias.
 
 ## Remaining Risks
 

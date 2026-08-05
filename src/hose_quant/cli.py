@@ -8,7 +8,11 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from hose_quant.config import AppSettings, MissingCredentialError, load_settings
-from hose_quant.data.models import DailyCoverageConfig, LiquidityScreenConfig
+from hose_quant.data.models import (
+    DailyCampaignReadinessPolicy,
+    DailyCoverageConfig,
+    LiquidityScreenConfig,
+)
 from hose_quant.data.validators import has_blocking_errors
 from hose_quant.data.vnstock_adapter import VnstockCapabilityAuditor
 from hose_quant.data.workflows import DataWorkflow, SafetyLimitError
@@ -222,6 +226,8 @@ def build_parser() -> argparse.ArgumentParser:
     campaign_audit.add_argument("--min-span-coverage-ratio", type=float, default=None)
     campaign_audit.add_argument("--stale-after-calendar-days", type=int, default=None)
     campaign_audit.add_argument("--max-zero-volume-frequency", type=float, default=None)
+    campaign_audit.add_argument("--min-vnd-usable-symbol-ratio", type=float, default=None)
+    campaign_audit.add_argument("--max-absent-symbol-ratio", type=float, default=None)
 
     campaign_assemble = data_subparsers.add_parser(
         "assemble-daily-campaign",
@@ -373,6 +379,7 @@ def _run_data_command(args: argparse.Namespace, settings: AppSettings) -> int:
             result = workflow.audit_daily_campaign(
                 campaign_id=args.campaign_id,
                 config=_daily_coverage_config(args, settings),
+                readiness_policy=_daily_campaign_readiness_policy(args, settings),
             )
         elif args.data_command == "assemble-daily-campaign":
             result = workflow.assemble_daily_campaign(campaign_id=args.campaign_id)
@@ -391,6 +398,17 @@ def _run_data_command(args: argparse.Namespace, settings: AppSettings) -> int:
         print(f"Manifest: {result.manifest_path}")
     for path in result.manifest.output_paths:
         print(f"Output: {path}")
+    campaign_status_labels = {
+        "campaign_complete": "Campaign complete",
+        "assembly_compatible": "Assembly compatible",
+        "assembly_ready": "Assembly ready",
+        "coverage_quality_status": "Coverage-quality status",
+        "research_readiness_status": "Research-readiness status",
+        "canonical_candidate": "Canonical candidate",
+    }
+    for key, label in campaign_status_labels.items():
+        if key in result.manifest.parameters:
+            print(f"{label}: {result.manifest.parameters[key]}")
     if result.manifest.error_summary:
         for error in result.manifest.error_summary:
             print(f"Error: {error}", file=sys.stderr)
@@ -473,6 +491,24 @@ def _daily_coverage_config(
             args.max_zero_volume_frequency
             if args.max_zero_volume_frequency is not None
             else settings.daily_coverage_max_zero_volume_frequency
+        ),
+    )
+
+
+def _daily_campaign_readiness_policy(
+    args: argparse.Namespace,
+    settings: AppSettings,
+) -> DailyCampaignReadinessPolicy:
+    return DailyCampaignReadinessPolicy(
+        min_vnd_usable_symbol_ratio=(
+            args.min_vnd_usable_symbol_ratio
+            if args.min_vnd_usable_symbol_ratio is not None
+            else settings.campaign_readiness_min_vnd_usable_symbol_ratio
+        ),
+        max_absent_symbol_ratio=(
+            args.max_absent_symbol_ratio
+            if args.max_absent_symbol_ratio is not None
+            else settings.campaign_readiness_max_absent_symbol_ratio
         ),
     )
 

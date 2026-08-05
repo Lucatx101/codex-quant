@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,8 +13,17 @@ LIQUIDITY_CONTRACT_VERSION = "liquidity-characterization-v2"
 AVAILABILITY_CONTRACT_VERSION = "daily-availability-v1"
 DAILY_COVERAGE_CONTRACT_VERSION = "daily-coverage-v1"
 DAILY_CAMPAIGN_CONTRACT_VERSION = "daily-ingestion-campaign-v1"
+DAILY_CAMPAIGN_STATE_CONTRACT_VERSION: Literal["daily-campaign-state-v2"] = (
+    "daily-campaign-state-v2"
+)
+DAILY_CAMPAIGN_READINESS_CONTRACT_VERSION: Literal["daily-campaign-readiness-v1"] = (
+    "daily-campaign-readiness-v1"
+)
+DAILY_CAMPAIGN_READINESS_POLICY_VERSION: Literal[
+    "campaign-research-readiness-policy-v1"
+] = "campaign-research-readiness-policy-v1"
 ASSEMBLED_DAILY_CONTRACT_VERSION = "assembled-daily-v1"
-DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION = "daily-campaign-audit-v1"
+DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION = "daily-campaign-audit-v2"
 
 
 class DataContract(BaseModel):
@@ -392,6 +401,10 @@ ASSEMBLED_DAILY_CONTRACT = DataContract(
             "must agree before assembly."
         ),
         "adjustment": "No adjusted-price or corporate-action completeness claim is added.",
+        "research_readiness": (
+            "Structural assembly does not imply research readiness or canonical candidacy; "
+            "those require a separate accepted campaign coverage-quality assessment."
+        ),
     },
 )
 
@@ -405,6 +418,9 @@ def contract_versions() -> dict[str, str]:
         "availability": AVAILABILITY_CONTRACT_VERSION,
         "daily_coverage": DAILY_COVERAGE_CONTRACT_VERSION,
         "daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION,
+        "daily_campaign_state": DAILY_CAMPAIGN_STATE_CONTRACT_VERSION,
+        "daily_campaign_readiness": DAILY_CAMPAIGN_READINESS_CONTRACT_VERSION,
+        "daily_campaign_readiness_policy": DAILY_CAMPAIGN_READINESS_POLICY_VERSION,
         "assembled_daily": ASSEMBLED_DAILY_CONTRACT_VERSION,
         "daily_campaign_audit": DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION,
         "market_time": MARKET_TIME_POLICY_VERSION,

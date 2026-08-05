@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -148,6 +148,12 @@ class CampaignReceiptOrigin(StrEnum):
     ADOPTED_RUN = "adopted_run"
 
 
+class CampaignAcceptanceStatus(StrEnum):
+    NOT_ASSESSED = "not_assessed"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
 class TimestampAwarenessStatus(StrEnum):
     AWARE = "aware"
     NAIVE = "naive"
@@ -241,6 +247,20 @@ class DailyCoverageConfig(BaseModel):
     min_span_coverage_ratio: float = Field(default=0.9, ge=0, le=1)
     stale_after_calendar_days: int = Field(default=7, ge=0)
     max_zero_volume_frequency: float = Field(default=0.2, ge=0, le=1)
+
+
+class DailyCampaignReadinessPolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    policy_version: Literal["campaign-research-readiness-policy-v1"] = (
+        "campaign-research-readiness-policy-v1"
+    )
+    research_scope: Literal["raw_ohlcv_and_vnd_liquidity"] = (
+        "raw_ohlcv_and_vnd_liquidity"
+    )
+    min_vnd_usable_symbol_ratio: float = Field(default=1.0, ge=0, le=1)
+    max_absent_symbol_ratio: float = Field(default=0.0, ge=0, le=1)
+    require_common_vnd_date_overlap: bool = True
 
 
 class DailyCampaignTask(BaseModel):
@@ -370,18 +390,45 @@ class DailyCampaignTaskAssessment(BaseModel):
     reason_codes: list[str] = Field(default_factory=list)
 
 
+class DailyCampaignReadinessAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    readiness_contract_version: Literal["daily-campaign-readiness-v1"]
+    audit_run_id: str
+    assessed_at_utc: datetime = Field(default_factory=utc_now)
+    source_evidence_digest: str
+    coverage_config: DailyCoverageConfig
+    policy: DailyCampaignReadinessPolicy
+    coverage_quality_status: CampaignAcceptanceStatus
+    research_readiness_status: CampaignAcceptanceStatus
+    criteria: dict[str, bool]
+    metrics: dict[str, int | float | bool]
+    reason_codes: list[str] = Field(default_factory=list)
+    known_risks: list[str] = Field(default_factory=list)
+
+
 class DailyCampaignState(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    state_contract_version: Literal["daily-campaign-state-v2"] = "daily-campaign-state-v2"
     campaign_contract_version: str
     campaign_id: str
     updated_at_utc: datetime = Field(default_factory=utc_now)
     task_counts: dict[str, int] = Field(default_factory=dict)
     symbol_counts: dict[str, int] = Field(default_factory=dict)
     source_run_ids: list[str] = Field(default_factory=list)
+    campaign_complete: bool = False
+    assembly_compatible: bool = False
     assembly_ready: bool = False
+    coverage_quality_status: CampaignAcceptanceStatus = (
+        CampaignAcceptanceStatus.NOT_ASSESSED
+    )
+    research_readiness_status: CampaignAcceptanceStatus = (
+        CampaignAcceptanceStatus.NOT_ASSESSED
+    )
     canonical_candidate: bool = False
     assembled_dataset_id: str | None = None
+    readiness_assessment: DailyCampaignReadinessAssessment | None = None
     tasks: list[DailyCampaignTaskAssessment] = Field(default_factory=list)
 
 
