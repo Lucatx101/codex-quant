@@ -37,6 +37,11 @@ The community package advertises 60 requests per minute. Defaults remain conserv
 Vnstock may make internal HTTP retries that this wrapper cannot observe, so wrapper attempt count
 is useful audit evidence but not an exact provider-side quota measurement.
 
+Vnstock 4.0.4 KBS OHLCV raises a specific `ValueError` when a valid request returns an empty
+OHLCV list. The provider adapter maps only that exact empty-response condition to an empty OHLCV
+DataFrame, without retrying it. Campaign tasks can therefore record immutable provider-empty
+evidence. Other `ValueError` responses remain failures and are never reclassified as empty.
+
 ## State Model
 
 Campaign state is generated and ignored by Git:

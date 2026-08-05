@@ -33,6 +33,7 @@ from hose_quant.logging import redact_value
 
 TEST_SYMBOLS = ["VNINDEX", "FPT", "HPG", "VCB"]
 DAILY_OHLCV_MAX_BARS_PER_REQUEST = 1000
+DAILY_OHLCV_COLUMNS = ["time", "open", "high", "low", "close", "volume"]
 DOCUMENTATION_SOURCES = [
     "https://vnstocks.com/docs",
     "https://vnstocks.com/docs/vnstock/du-lieu-thi-truong-market-data",
@@ -59,6 +60,8 @@ def categorize_exception(exc: BaseException) -> ErrorCategory:
         return ErrorCategory.TIMEOUT
     if isinstance(exc, ImportError) or "no module named" in text:
         return ErrorCategory.PACKAGE_NOT_INSTALLED
+    if "dữ liệu trống cho mã" in text and "với interval" in text:
+        return ErrorCategory.EMPTY_RESPONSE
     if "rate limit" in text or "too many requests" in text or " 429" in text or "429" in text:
         return ErrorCategory.RATE_LIMIT
     if (
@@ -767,15 +770,20 @@ class VnstockDataProvider:
     def fetch_daily_ohlcv(self, symbol: str, start: date, end: date) -> pd.DataFrame:
         market, _reference = self._ensure_client()
         del _reference
-        frame = self._call(
-            lambda: market.equity(symbol.upper()).ohlcv(
-                start=start.isoformat(),
-                end=end.isoformat(),
-                resolution="1D",
-                count=DAILY_OHLCV_MAX_BARS_PER_REQUEST,
-                source=VNSTOCK_KBS_DATA_BACKEND,
+        try:
+            frame = self._call(
+                lambda: market.equity(symbol.upper()).ohlcv(
+                    start=start.isoformat(),
+                    end=end.isoformat(),
+                    resolution="1D",
+                    count=DAILY_OHLCV_MAX_BARS_PER_REQUEST,
+                    source=VNSTOCK_KBS_DATA_BACKEND,
+                )
             )
-        )
+        except Exception as exc:
+            if categorize_exception(exc) is ErrorCategory.EMPTY_RESPONSE:
+                return pd.DataFrame(columns=DAILY_OHLCV_COLUMNS)
+            raise
         if not isinstance(frame, pd.DataFrame):
             return pd.DataFrame(frame)
         return frame

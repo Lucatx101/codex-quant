@@ -33,6 +33,70 @@ def test_error_categorization_network() -> None:
     assert categorize_exception(RuntimeError("Name resolution failed")) is ErrorCategory.NETWORK
 
 
+def test_kbs_empty_ohlcv_error_is_not_retried_and_maps_to_empty_frame(tmp_path) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        report_dir=tmp_path / "reports",
+        max_retry_attempts=2,
+        provider_sleep_seconds=0,
+    )
+    provider = VnstockDataProvider(settings)
+
+    class EmptyEquity:
+        @staticmethod
+        def ohlcv(**_kwargs):  # type: ignore[no-untyped-def]
+            raise ValueError("Dữ liệu trống cho mã AAN với interval 1D.")
+
+    class Market:
+        @staticmethod
+        def equity(_symbol: str) -> EmptyEquity:
+            return EmptyEquity()
+
+    provider._market = Market()
+    provider._reference = object()
+    frame = provider.fetch_daily_ohlcv(
+        "AAN",
+        start=pd.Timestamp("2020-01-01").date(),
+        end=pd.Timestamp("2021-12-30").date(),
+    )
+
+    assert frame.empty
+    assert frame.columns.tolist() == ["time", "open", "high", "low", "close", "volume"]
+    assert provider.call_count == 1
+
+
+def test_non_empty_provider_value_error_is_not_mapped_to_empty_frame(tmp_path) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        report_dir=tmp_path / "reports",
+        max_retry_attempts=1,
+        provider_sleep_seconds=0,
+    )
+    provider = VnstockDataProvider(settings)
+
+    class InvalidEquity:
+        @staticmethod
+        def ohlcv(**_kwargs):  # type: ignore[no-untyped-def]
+            raise ValueError("Không tìm thấy dữ liệu cho mã INVALID.")
+
+    class Market:
+        @staticmethod
+        def equity(_symbol: str) -> InvalidEquity:
+            return InvalidEquity()
+
+    provider._market = Market()
+    provider._reference = object()
+
+    with pytest.raises(ValueError, match="Không tìm thấy dữ liệu"):
+        provider.fetch_daily_ohlcv(
+            "INVALID",
+            start=pd.Timestamp("2020-01-01").date(),
+            end=pd.Timestamp("2021-12-30").date(),
+        )
+
+
 def test_empty_response_mapping() -> None:
     inspection = inspect_dataframe(pd.DataFrame(columns=["time", "open"]))
     assert inspection.error_category is ErrorCategory.EMPTY_RESPONSE
