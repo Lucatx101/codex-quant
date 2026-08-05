@@ -9,11 +9,13 @@ import pandas as pd
 
 from hose_quant.data.contracts import (
     AVAILABILITY_CONTRACT,
+    DAILY_COVERAGE_CONTRACT,
     DAILY_PANEL_CONTRACT,
     LIQUIDITY_CONTRACT,
     RESEARCH_UNIVERSE_CONTRACT,
 )
 from hose_quant.data.models import (
+    DailyCoverageStatus,
     HistoricalMembershipStatus,
     ProviderTimeParseStatus,
     TimestampAwarenessStatus,
@@ -146,6 +148,7 @@ def validate_universe_snapshot(
     results = _missing_columns(frame, dataset_name=dataset_name, required_columns=required)
     if results:
         return results
+
     if frame["symbol"].isna().any():
         results.append(
             _result(
@@ -905,6 +908,339 @@ def validate_availability_diagnostics(frame: pd.DataFrame) -> list[ValidationRes
                 message="Symbols marked absent cannot have observations.",
                 affected_columns=["absence_of_data", "observation_count"],
                 affected_row_count=int(absent_with_rows.sum()),
+                blocks_output=True,
+            )
+        )
+    return results
+
+
+def validate_daily_coverage(
+    frame: pd.DataFrame,
+    *,
+    expected_symbol_count: int,
+) -> list[ValidationResult]:
+    dataset_name = "daily_coverage"
+    results = _missing_columns(
+        frame,
+        dataset_name=dataset_name,
+        required_columns=set(DAILY_COVERAGE_CONTRACT.required_columns),
+    )
+    if results:
+        return results
+
+    contract_mismatch = frame["feature_input_contract_version"].astype("string").ne(
+        DAILY_COVERAGE_CONTRACT.version
+    )
+    if contract_mismatch.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="coverage_contract_version",
+                message="Coverage rows do not match the declared daily coverage contract.",
+                affected_columns=["feature_input_contract_version"],
+                affected_row_count=int(contract_mismatch.sum()),
+                blocks_output=True,
+            )
+        )
+
+    if len(frame) != expected_symbol_count:
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="audited_symbol_count",
+                message="Coverage output does not contain exactly one row per audited symbol.",
+                affected_row_count=abs(len(frame) - expected_symbol_count),
+                blocks_output=True,
+            )
+        )
+    null_symbols = frame["symbol"].isna() | frame["symbol"].astype("string").str.strip().eq("")
+    duplicate_symbols = frame["symbol"].duplicated(keep=False)
+    if null_symbols.any() or duplicate_symbols.any():
+        invalid_keys = null_symbols | duplicate_symbols
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="symbol_key_unique_and_present",
+                message="Coverage rows require one non-empty row per symbol.",
+                affected_columns=["symbol"],
+                affected_row_count=int(invalid_keys.sum()),
+                sample_affected_keys=_sample_keys(frame[invalid_keys], ["symbol"]),
+                blocks_output=True,
+            )
+        )
+
+    allowed_statuses = {status.value for status in DailyCoverageStatus}
+    invalid_status = ~frame["coverage_status"].astype("string").isin(allowed_statuses)
+    if invalid_status.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="coverage_status_enum",
+                message="Coverage rows contain an unsupported usability status.",
+                affected_columns=["coverage_status"],
+                affected_row_count=int(invalid_status.sum()),
+                sample_affected_keys=_sample_keys(frame[invalid_status], ["symbol"]),
+                blocks_output=True,
+            )
+        )
+
+    allowed_snapshot_statuses = {
+        "current_snapshot_candidate",
+        "not_in_selected_current_snapshot",
+    }
+    invalid_snapshot_status = ~frame["current_universe_snapshot_status"].astype("string").isin(
+        allowed_snapshot_statuses
+    )
+    if invalid_snapshot_status.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="current_snapshot_status_enum",
+                message="Coverage rows contain an unsupported current-snapshot status.",
+                affected_columns=["current_universe_snapshot_status"],
+                affected_row_count=int(invalid_snapshot_status.sum()),
+                blocks_output=True,
+            )
+        )
+
+    allowed_request_statuses = {
+        "requested",
+        "not_requested",
+        "not_requested_but_observed",
+    }
+    request_status = frame["source_run_request_status"].astype("string")
+    invalid_request_status = ~request_status.isin(allowed_request_statuses)
+    if invalid_request_status.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="source_run_request_status_enum",
+                message="Coverage rows contain an unsupported source-run request status.",
+                affected_columns=["source_run_request_status"],
+                affected_row_count=int(invalid_request_status.sum()),
+                blocks_output=True,
+            )
+        )
+
+    for column in [
+        "requested_weekday_coverage_ratio",
+        "observed_span_coverage_ratio",
+        "zero_volume_frequency",
+        "minimum_span_coverage_ratio",
+        "maximum_zero_volume_frequency",
+    ]:
+        numeric = pd.to_numeric(frame[column], errors="coerce")
+        invalid = numeric.notna() & ~numeric.between(0, 1, inclusive="both")
+        if invalid.any():
+            results.append(
+                _result(
+                    dataset_name=dataset_name,
+                    severity=ValidationSeverity.ERROR,
+                    check_name=f"{column}_range",
+                    message=f"{column} must be between zero and one.",
+                    affected_columns=[column],
+                    affected_row_count=int(invalid.sum()),
+                    sample_affected_keys=_sample_keys(frame[invalid], ["symbol"]),
+                    blocks_output=True,
+                )
+            )
+
+    count_columns = [
+        "observation_count",
+        "unique_observation_date_count",
+        "duplicate_row_count",
+        "conflicting_duplicate_date_count",
+        "source_file_count",
+        "requested_weekday_count",
+        "observed_span_weekday_count",
+        "observed_span_missing_weekday_count",
+        "longest_missing_weekday_streak",
+        "weekend_observation_count",
+        "invalid_date_count",
+        "missing_ohlc_count",
+        "invalid_ohlc_count",
+        "missing_volume_count",
+        "negative_volume_count",
+        "non_integer_volume_count",
+        "zero_volume_count",
+    ]
+    negative_count = pd.Series(False, index=frame.index)
+    for column in count_columns:
+        numeric = pd.to_numeric(frame[column], errors="coerce")
+        negative_count |= numeric.isna() | (numeric < 0) | ((numeric % 1) != 0)
+    if negative_count.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="diagnostic_counts_non_negative_integers",
+                message="Coverage diagnostic counts must be non-negative integers.",
+                affected_columns=count_columns,
+                affected_row_count=int(negative_count.sum()),
+                sample_affected_keys=_sample_keys(frame[negative_count], ["symbol"]),
+                blocks_output=True,
+            )
+        )
+
+    observation_count = pd.to_numeric(frame["observation_count"], errors="coerce")
+    coverage_status = frame["coverage_status"].astype("string")
+    zero_observation_status = coverage_status.isin(
+        {
+            DailyCoverageStatus.ABSENT.value,
+            DailyCoverageStatus.NOT_INGESTED.value,
+        }
+    )
+    absent_mismatch = zero_observation_status.ne(observation_count.eq(0))
+    if absent_mismatch.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="absence_status_consistency",
+                message=(
+                    "Zero-observation symbols must be absent or not_ingested, and those statuses "
+                    "cannot carry observations."
+                ),
+                affected_columns=["coverage_status", "observation_count"],
+                affected_row_count=int(absent_mismatch.sum()),
+                sample_affected_keys=_sample_keys(frame[absent_mismatch], ["symbol"]),
+                blocks_output=True,
+            )
+        )
+
+    request_mapping_mismatch = (
+        coverage_status.eq(DailyCoverageStatus.NOT_INGESTED.value)
+        & request_status.ne("not_requested")
+    ) | (
+        coverage_status.eq(DailyCoverageStatus.ABSENT.value)
+        & request_status.ne("requested")
+    )
+    undeclared_observation_mismatch = request_status.eq(
+        "not_requested_but_observed"
+    ) & ~coverage_status.eq(DailyCoverageStatus.BLOCKING_QUALITY_ISSUES.value)
+    request_observation_mismatch = (
+        request_status.eq("not_requested") & observation_count.ne(0)
+    ) | (request_status.eq("not_requested_but_observed") & observation_count.eq(0))
+    request_mapping_mismatch |= (
+        undeclared_observation_mismatch | request_observation_mismatch
+    )
+    if request_mapping_mismatch.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="source_request_coverage_consistency",
+                message=(
+                    "Coverage status must distinguish unrequested, requested-empty, and "
+                    "undeclared observed symbols."
+                ),
+                affected_columns=["source_run_request_status", "coverage_status"],
+                affected_row_count=int(request_mapping_mismatch.sum()),
+                sample_affected_keys=_sample_keys(
+                    frame[request_mapping_mismatch], ["symbol"]
+                ),
+                blocks_output=True,
+            )
+        )
+
+    usable_status = frame["coverage_status"].astype("string").isin(
+        {
+            DailyCoverageStatus.USABLE_NON_MONETARY.value,
+            DailyCoverageStatus.USABLE_VND.value,
+        }
+    )
+    raw_usable = frame["raw_ohlcv_research_usable"].fillna(False).astype(bool)
+    raw_mismatch = raw_usable.ne(usable_status)
+    if raw_mismatch.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="raw_usability_status_consistency",
+                message="Raw OHLCV usability must agree with the coverage status.",
+                affected_columns=["coverage_status", "raw_ohlcv_research_usable"],
+                affected_row_count=int(raw_mismatch.sum()),
+                sample_affected_keys=_sample_keys(frame[raw_mismatch], ["symbol"]),
+                blocks_output=True,
+            )
+        )
+
+    vnd_usable = frame["vnd_liquidity_research_usable"].fillna(False).astype(bool)
+    vnd_permitted = frame["vnd_traded_value_permitted"].fillna(False).astype(bool)
+    vnd_status = frame["coverage_status"].astype("string").eq(
+        DailyCoverageStatus.USABLE_VND.value
+    )
+    vnd_status_mismatch = vnd_usable.ne(vnd_status)
+    if vnd_status_mismatch.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="vnd_usability_status_consistency",
+                message="VND usability must agree with the usable_vnd coverage status.",
+                affected_columns=["coverage_status", "vnd_liquidity_research_usable"],
+                affected_row_count=int(vnd_status_mismatch.sum()),
+                sample_affected_keys=_sample_keys(frame[vnd_status_mismatch], ["symbol"]),
+                blocks_output=True,
+            )
+        )
+    invalid_vnd_claim = vnd_usable & (
+        ~raw_usable
+        | ~vnd_permitted
+        | frame["unit_provenance_status"]
+        .astype("string")
+        .ne(UnitProvenanceStatus.VERIFIED.value)
+        | frame["unit_verification_status"]
+        .astype("string")
+        .ne(UnitVerificationStatus.VERIFIED.value)
+        | frame["traded_value_unit"].astype("string").ne(TradedValueUnit.VND.value)
+        | frame["coverage_status"].astype("string").ne(DailyCoverageStatus.USABLE_VND.value)
+    )
+    if invalid_vnd_claim.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="vnd_usability_requires_verified_provenance",
+                message="VND usability requires raw usability and verified registered units.",
+                affected_columns=[
+                    "vnd_liquidity_research_usable",
+                    "vnd_traded_value_permitted",
+                    "unit_provenance_status",
+                    "unit_verification_status",
+                    "traded_value_unit",
+                ],
+                affected_row_count=int(invalid_vnd_claim.sum()),
+                sample_affected_keys=_sample_keys(frame[invalid_vnd_claim], ["symbol"]),
+                blocks_output=True,
+            )
+        )
+
+    unsupported_claim = (
+        frame["adjusted_price_research_usable"].fillna(False).astype(bool)
+        | frame["point_in_time_universe_research_usable"].fillna(False).astype(bool)
+    )
+    if unsupported_claim.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="unsupported_research_claims_remain_false",
+                message=(
+                    "Coverage cannot verify adjusted prices or point-in-time universe membership."
+                ),
+                affected_columns=[
+                    "adjusted_price_research_usable",
+                    "point_in_time_universe_research_usable",
+                ],
+                affected_row_count=int(unsupported_claim.sum()),
+                sample_affected_keys=_sample_keys(frame[unsupported_claim], ["symbol"]),
                 blocks_output=True,
             )
         )

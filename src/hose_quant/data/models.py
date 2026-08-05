@@ -123,6 +123,17 @@ class LiquidityScreenStatus(StrEnum):
     ABSENT_DATA = "absent_data"
 
 
+class DailyCoverageStatus(StrEnum):
+    NOT_INGESTED = "not_ingested"
+    ABSENT = "absent"
+    BLOCKING_QUALITY_ISSUES = "blocking_quality_issues"
+    STALE = "stale"
+    INSUFFICIENT_HISTORY = "insufficient_history"
+    SPARSE = "sparse"
+    USABLE_NON_MONETARY = "usable_non_monetary"
+    USABLE_VND = "usable_vnd"
+
+
 class TimestampAwarenessStatus(StrEnum):
     AWARE = "aware"
     NAIVE = "naive"
@@ -207,6 +218,15 @@ class LiquidityScreenConfig(BaseModel):
         if self.min_history_observations > self.window_weekdays:
             raise ValueError("min_history_observations cannot exceed window_weekdays.")
         return self
+
+
+class DailyCoverageConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    min_history_observations: int = Field(default=500, ge=1)
+    min_span_coverage_ratio: float = Field(default=0.9, ge=0, le=1)
+    stale_after_calendar_days: int = Field(default=7, ge=0)
+    max_zero_volume_frequency: float = Field(default=0.2, ge=0, le=1)
 
 
 class TimestampProvenance(BaseModel):

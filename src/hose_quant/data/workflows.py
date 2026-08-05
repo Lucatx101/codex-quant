@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -8,9 +8,18 @@ import pandas as pd
 from hose_quant.config import AppSettings
 from hose_quant.data.contracts import (
     AVAILABILITY_CONTRACT_VERSION,
+    DAILY_COVERAGE_CONTRACT_VERSION,
     DAILY_PANEL_CONTRACT_VERSION,
     LIQUIDITY_CONTRACT_VERSION,
     UNIVERSE_CONTRACT_VERSION,
+)
+from hose_quant.data.coverage import (
+    KNOWN_COVERAGE_RISKS,
+    summarize_daily_coverage,
+    write_daily_coverage_report,
+)
+from hose_quant.data.coverage import (
+    audit_daily_coverage as build_daily_coverage_audit,
 )
 from hose_quant.data.feature_inputs import (
     apply_liquidity_to_universe,
@@ -25,6 +34,7 @@ from hose_quant.data.feature_inputs import (
 from hose_quant.data.manifests import build_manifest, create_run_id, write_manifest
 from hose_quant.data.market_time import aware_timestamp_to_utc
 from hose_quant.data.models import (
+    DailyCoverageConfig,
     LiquidityScreenConfig,
     LiquidityUnitPolicy,
     ValidationResult,
@@ -43,6 +53,7 @@ from hose_quant.data.unit_provenance import resolve_daily_unit_policy
 from hose_quant.data.validators import (
     has_blocking_errors,
     validate_availability_diagnostics,
+    validate_daily_coverage,
     validate_daily_ohlcv,
     validate_daily_panel,
     validate_intraday_bars,
@@ -52,11 +63,18 @@ from hose_quant.data.validators import (
     validate_universe_snapshot,
     write_validation_reports,
 )
-from hose_quant.data.vnstock_adapter import VnstockDataProvider, sanitize_error
+from hose_quant.data.vnstock_adapter import (
+    DAILY_OHLCV_MAX_BARS_PER_REQUEST,
+    VnstockDataProvider,
+    sanitize_error,
+)
 
 
 class SafetyLimitError(ValueError):
     """Raised when a command exceeds the configured free-tier safety limits."""
+
+
+MAX_SAFE_DAILY_CHUNK_CALENDAR_DAYS = 1095
 
 
 class DataWorkflow:
@@ -108,7 +126,7 @@ class DataWorkflow:
                     )
                 )
         except Exception as exc:
-            errors.append(sanitize_error(exc))
+            errors.append(self._sanitize_provider_error(exc))
         status = _status(validation_results, errors)
         manifest = build_manifest(
             run_id=run_id,
@@ -136,11 +154,23 @@ class DataWorkflow:
         symbols: list[str],
         start: date,
         end: date,
+        chunk_calendar_days: int | None = None,
         allow_large_universe: bool = False,
         dry_run: bool = False,
     ) -> WorkflowResult:
         clean_symbols = _clean_symbols(symbols)
         self._enforce_symbol_limit(clean_symbols, allow_large_universe=allow_large_universe)
+        chunk_days = (
+            self.settings.daily_backfill_chunk_calendar_days
+            if chunk_calendar_days is None
+            else chunk_calendar_days
+        )
+        chunks = daily_date_chunks(start, end, chunk_calendar_days=chunk_days)
+        projected_call_count = len(clean_symbols) * len(chunks)
+        self._enforce_provider_call_limit(
+            projected_call_count,
+            allow_large_universe=allow_large_universe,
+        )
         started = utc_now()
         run_id = create_run_id("backfill-daily", started)
         if dry_run:
@@ -151,6 +181,14 @@ class DataWorkflow:
                 symbols=clean_symbols,
                 start_date=start.isoformat(),
                 end_date=end.isoformat(),
+                parameters={
+                    "chunk_calendar_days": chunk_days,
+                    "chunk_count_per_symbol": len(chunks),
+                    "projected_provider_call_count": projected_call_count,
+                    "max_retry_attempts": self.settings.max_retry_attempts,
+                    "provider_call_limit": self.settings.max_live_provider_calls,
+                    "provider_sleep_seconds": self.settings.provider_sleep_seconds,
+                },
             )
         provider = self._require_provider()
         source_unit_provenance = provider.daily_unit_provenance()
@@ -159,22 +197,49 @@ class DataWorkflow:
         errors: list[str] = []
         raw_frames: list[pd.DataFrame] = []
         normalized_frames: list[pd.DataFrame] = []
+        successful_chunk_count = 0
+        empty_chunk_count = 0
+        abort_run = False
         for symbol in clean_symbols:
-            try:
-                raw = provider.fetch_daily_ohlcv(symbol, start, end)
-                raw_with_symbol = raw.copy()
-                raw_with_symbol["symbol"] = symbol
-                raw_frames.append(raw_with_symbol)
-                normalized_frames.append(
-                    normalize_daily_ohlcv(
+            for chunk_start, chunk_end in chunks:
+                try:
+                    raw = provider.fetch_daily_ohlcv(symbol, chunk_start, chunk_end)
+                    raw_with_symbol = raw.copy()
+                    raw_with_symbol["symbol"] = symbol
+                    raw_with_symbol["request_start_date"] = chunk_start.isoformat()
+                    raw_with_symbol["request_end_date"] = chunk_end.isoformat()
+                    raw_frames.append(raw_with_symbol)
+                    if len(raw) >= DAILY_OHLCV_MAX_BARS_PER_REQUEST:
+                        raise ValueError(
+                            "Daily provider response reached the 1,000-bar safety boundary; "
+                            "reduce --chunk-calendar-days before trusting coverage."
+                        )
+                    normalized = normalize_daily_ohlcv(
                         raw,
                         symbol=symbol,
                         exchange="HOSE",
                         unit_provenance=source_unit_provenance,
                     )
-                )
-            except Exception as exc:
-                errors.append(f"{symbol}: {sanitize_error(exc)}")
+                    _validate_daily_chunk_bounds(
+                        normalized,
+                        symbol=symbol,
+                        start=chunk_start,
+                        end=chunk_end,
+                    )
+                    if normalized.empty:
+                        empty_chunk_count += 1
+                    else:
+                        normalized_frames.append(normalized)
+                    successful_chunk_count += 1
+                except Exception as exc:
+                    errors.append(
+                        f"{symbol} {chunk_start.isoformat()}..{chunk_end.isoformat()}: "
+                        f"{self._sanitize_provider_error(exc)}"
+                    )
+                    abort_run = True
+                    break
+            if abort_run:
+                break
         if raw_frames:
             raw_all = pd.concat(raw_frames, ignore_index=True)
             output_paths.append(self.storage.write_raw_frame("daily", run_id, raw_all))
@@ -183,8 +248,18 @@ class DataWorkflow:
         )
         if not normalized_all.empty:
             validation_results = validate_daily_ohlcv(normalized_all)
-            if not has_blocking_errors(validation_results):
+            if not errors and not has_blocking_errors(validation_results):
                 output_paths.extend(self.storage.write_daily_partitions(normalized_all, run_id))
+        else:
+            validation_results.append(
+                ValidationResult(
+                    dataset_name="daily",
+                    severity=ValidationSeverity.ERROR,
+                    check_name="daily_observations_available",
+                    message="The provider returned no normalized daily observations.",
+                    blocks_output=True,
+                )
+            )
         status = _status(validation_results, errors)
         effective_unit_policy = resolve_daily_unit_policy(normalized_all)
         manifest = build_manifest(
@@ -200,8 +275,19 @@ class DataWorkflow:
             row_counts={
                 "raw": sum(len(frame) for frame in raw_frames),
                 "normalized": len(normalized_all),
+                "chunks_projected": projected_call_count,
+                "chunks_succeeded": successful_chunk_count,
+                "chunks_empty": empty_chunk_count,
             },
             output_paths=output_paths,
+            parameters={
+                "chunk_calendar_days": chunk_days,
+                "chunk_count_per_symbol": len(chunks),
+                "projected_provider_call_count": projected_call_count,
+                "provider_call_limit": self.settings.max_live_provider_calls,
+                "provider_sleep_seconds": self.settings.provider_sleep_seconds,
+                "max_retry_attempts": self.settings.max_retry_attempts,
+            },
             unit_provenance=effective_unit_policy,
             validation_results=validation_results,
             error_summary=errors,
@@ -253,7 +339,7 @@ class DataWorkflow:
                     )
                 )
             except Exception as exc:
-                errors.append(f"{symbol}: {sanitize_error(exc)}")
+                errors.append(f"{symbol}: {self._sanitize_provider_error(exc)}")
         if raw_frames:
             raw_all = pd.concat(raw_frames, ignore_index=True)
             output_paths.append(self.storage.write_raw_frame("intraday", run_id, raw_all))
@@ -338,7 +424,7 @@ class DataWorkflow:
                     )
                 )
         except Exception as exc:
-            errors.append(sanitize_error(exc))
+            errors.append(self._sanitize_provider_error(exc))
         status = _status(validation_results, errors)
         manifest = build_manifest(
             run_id=run_id,
@@ -370,6 +456,7 @@ class DataWorkflow:
         with_liquidity: bool,
         liquidity_reference_date: date | None,
         liquidity_config: LiquidityScreenConfig,
+        daily_run_id: str | None = None,
     ) -> WorkflowResult:
         started = utc_now()
         run_id = create_run_id("prepare-universe", started)
@@ -453,7 +540,10 @@ class DataWorkflow:
                     "Liquidity reference date cannot be after the selected universe snapshot "
                     "observation date."
                 )
-            daily_source = self.storage.read_normalized_dataset_with_provenance("daily")
+            daily_source = self.storage.read_normalized_dataset_with_provenance(
+                "daily",
+                run_id=daily_run_id,
+            )
             daily_all = (
                 daily_source[0]
                 if daily_source is not None
@@ -543,6 +633,7 @@ class DataWorkflow:
             "with_liquidity": with_liquidity,
             "liquidity_reference_date": reference_date.isoformat() if with_liquidity else None,
             "liquidity_config": liquidity_config.model_dump(mode="json"),
+            "daily_run_id": daily_run_id,
         }
         manifest = build_manifest(
             run_id=run_id,
@@ -580,10 +671,14 @@ class DataWorkflow:
         symbols: list[str] | None,
         start: date,
         end: date,
+        daily_run_id: str | None = None,
     ) -> WorkflowResult:
         started = utc_now()
         run_id = create_run_id("build-daily-panel", started)
-        daily_source = self.storage.read_normalized_dataset_with_provenance("daily")
+        daily_source = self.storage.read_normalized_dataset_with_provenance(
+            "daily",
+            run_id=daily_run_id,
+        )
         if daily_source is None:
             daily_all = pd.DataFrame(
                 columns=[
@@ -679,6 +774,7 @@ class DataWorkflow:
             input_paths=input_paths,
             output_paths=output_paths,
             unit_provenance=unit_policy,
+            parameters={"daily_run_id": daily_run_id},
             data_contract_versions={
                 "daily_panel": DAILY_PANEL_CONTRACT_VERSION,
                 "availability": AVAILABILITY_CONTRACT_VERSION,
@@ -687,6 +783,244 @@ class DataWorkflow:
                 "No bars were synthesized or forward-filled.",
                 "Weekday coverage does not remove Vietnamese holidays or exchange closures.",
                 "Price adjustment status remains explicit and may be unknown.",
+            ],
+            validation_results=validation_results,
+        )
+        manifest_path = write_manifest(manifest, self.storage.manifest_root)
+        return WorkflowResult(
+            manifest=manifest,
+            validation_results=validation_results,
+            manifest_path=str(manifest_path),
+        )
+
+    def audit_daily_coverage(
+        self,
+        *,
+        daily_run_id: str,
+        start: date,
+        end: date,
+        snapshot_date: date | None,
+        config: DailyCoverageConfig,
+    ) -> WorkflowResult:
+        started = utc_now()
+        run_id = create_run_id("audit-daily-coverage", started)
+        source_manifest = self.storage.read_manifest(daily_run_id)
+        source_parameters: dict[str, object] = {
+            "daily_run_id": daily_run_id,
+            "snapshot_date": snapshot_date.isoformat() if snapshot_date else None,
+            "coverage_config": config.model_dump(mode="json"),
+        }
+        if source_manifest is None:
+            return self._failed_local_result(
+                run_id=run_id,
+                command="data audit-daily-coverage",
+                started=started,
+                validation_result=ValidationResult(
+                    dataset_name="daily_coverage",
+                    severity=ValidationSeverity.ERROR,
+                    check_name="daily_source_manifest_available",
+                    message=f"No ingestion manifest was found for daily run {daily_run_id}.",
+                    blocks_output=True,
+                ),
+                parameters=source_parameters,
+                contract_versions={"daily_coverage": DAILY_COVERAGE_CONTRACT_VERSION},
+            )
+        if source_manifest.command != "data backfill-daily" or source_manifest.status != "success":
+            return self._failed_local_result(
+                run_id=run_id,
+                command="data audit-daily-coverage",
+                started=started,
+                validation_result=ValidationResult(
+                    dataset_name="daily_coverage",
+                    severity=ValidationSeverity.ERROR,
+                    check_name="daily_source_run_complete",
+                    message=(
+                        "Coverage requires a successful data backfill-daily source run; "
+                        f"received command={source_manifest.command}, "
+                        f"status={source_manifest.status}."
+                    ),
+                    blocks_output=True,
+                ),
+                parameters=source_parameters,
+                contract_versions={"daily_coverage": DAILY_COVERAGE_CONTRACT_VERSION},
+            )
+
+        daily_source = self.storage.read_normalized_dataset_with_provenance(
+            "daily",
+            run_id=daily_run_id,
+        )
+        if daily_source is None:
+            return self._failed_local_result(
+                run_id=run_id,
+                command="data audit-daily-coverage",
+                started=started,
+                validation_result=ValidationResult(
+                    dataset_name="daily_coverage",
+                    severity=ValidationSeverity.ERROR,
+                    check_name="normalized_daily_run_available",
+                    message=f"No normalized daily files were found for run {daily_run_id}.",
+                    blocks_output=True,
+                ),
+                parameters=source_parameters,
+                contract_versions={"daily_coverage": DAILY_COVERAGE_CONTRACT_VERSION},
+            )
+
+        universe_source = self.storage.read_normalized_dataset_with_provenance("universe")
+        if universe_source is None:
+            return self._failed_local_result(
+                run_id=run_id,
+                command="data audit-daily-coverage",
+                started=started,
+                validation_result=ValidationResult(
+                    dataset_name="daily_coverage",
+                    severity=ValidationSeverity.ERROR,
+                    check_name="normalized_universe_available",
+                    message="No local normalized universe snapshots were found.",
+                    blocks_output=True,
+                ),
+                parameters=source_parameters,
+                contract_versions={"daily_coverage": DAILY_COVERAGE_CONTRACT_VERSION},
+            )
+
+        universe_all, _universe_paths = universe_source
+        selected_universe, selected_timestamp = _select_universe_snapshot(
+            universe_all,
+            snapshot_date=snapshot_date,
+        )
+        selected_universe_paths = _input_paths(selected_universe)
+        selected_universe = selected_universe.drop(columns=["__input_path"], errors="ignore")
+        prepared_universe = prepare_research_universe(selected_universe, exchange="HOSE")
+        validation_results = validate_research_universe(
+            prepared_universe,
+            expected_input_row_count=len(selected_universe),
+        )
+        current_symbols = {
+            str(symbol)
+            for symbol in prepared_universe.loc[
+                (prepared_universe["candidate_status"] == "included_candidate")
+                & prepared_universe["symbol"].notna(),
+                "symbol",
+            ].tolist()
+        }
+        if not current_symbols:
+            validation_results.append(
+                ValidationResult(
+                    dataset_name="daily_coverage",
+                    severity=ValidationSeverity.ERROR,
+                    check_name="current_snapshot_candidates_available",
+                    message="The selected universe snapshot has no included HOSE stock candidates.",
+                    blocks_output=True,
+                )
+            )
+
+        daily_all, daily_paths = daily_source
+        coverage = build_daily_coverage_audit(
+            daily_all,
+            current_universe_symbols=current_symbols,
+            requested_symbols=set(source_manifest.symbols),
+            universe_snapshot_date=pd.Timestamp(selected_timestamp).date(),
+            daily_run_id=daily_run_id,
+            start=start,
+            end=end,
+            config=config,
+        )
+        validation_results.extend(
+            validate_daily_coverage(
+                coverage,
+                expected_symbol_count=_coverage_symbol_count(
+                    daily_all,
+                    current_universe_symbols=current_symbols,
+                    requested_symbols=set(source_manifest.symbols),
+                    start=start,
+                    end=end,
+                ),
+            )
+        )
+        selected_daily = _select_daily_source_rows(
+            daily_all,
+            symbols=_clean_optional_symbols(None, daily_all),
+            start=start,
+            end=end,
+        )
+        unit_policy = resolve_daily_unit_policy(selected_daily)
+        summary = summarize_daily_coverage(coverage)
+        output_paths: list[Path] = []
+        if not has_blocking_errors(validation_results):
+            output_paths.append(
+                self.storage.write_parquet(
+                    coverage,
+                    self.storage.feature_daily_coverage_path(
+                        snapshot_date=pd.Timestamp(selected_timestamp).date(),
+                        start=start,
+                        end=end,
+                        run_id=run_id,
+                    ),
+                )
+            )
+            report_json, report_markdown = write_daily_coverage_report(
+                coverage,
+                json_path=(
+                    self.settings.report_dir
+                    / "data_quality"
+                    / f"{run_id}-daily-coverage.json"
+                ),
+                markdown_path=(
+                    self.settings.report_dir
+                    / "data_quality"
+                    / f"{run_id}-daily-coverage.md"
+                ),
+                parameters={
+                    **source_parameters,
+                    "requested_start_date": start.isoformat(),
+                    "requested_end_date": end.isoformat(),
+                    "selected_snapshot_observed_at_utc": selected_timestamp.isoformat(),
+                    "source_ingestion_status": source_manifest.status,
+                    "source_ingestion_provider_call_count": source_manifest.provider_call_count,
+                },
+            )
+            output_paths.extend([report_json, report_markdown])
+
+        status = "failed" if has_blocking_errors(validation_results) else "success"
+        manifest = build_manifest(
+            run_id=run_id,
+            command="data audit-daily-coverage",
+            started_at_utc=started,
+            finished_at_utc=utc_now(),
+            status=status,
+            exchange="HOSE",
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            row_counts={
+                "current_snapshot_candidates": len(current_symbols),
+                "selected_normalized_daily": len(selected_daily),
+                "audited_symbols": int(summary["audited_symbol_count"]),
+                "symbols_with_daily_data": int(summary["symbols_with_daily_data"]),
+                "raw_ohlcv_usable_symbols": int(summary["raw_ohlcv_usable_symbol_count"]),
+                "vnd_liquidity_usable_symbols": int(
+                    summary["vnd_liquidity_usable_symbol_count"]
+                ),
+                "current_snapshot_vnd_usable_symbols": int(
+                    summary["current_snapshot_vnd_usable_symbol_count"]
+                ),
+            },
+            input_paths=sorted(
+                set(
+                    selected_universe_paths
+                    + daily_paths
+                    + [self.storage.manifest_path(daily_run_id)]
+                )
+            ),
+            output_paths=output_paths,
+            parameters={
+                **source_parameters,
+                "selected_snapshot_observed_at_utc": selected_timestamp.isoformat(),
+                "source_ingestion_manifest": str(self.storage.manifest_path(daily_run_id)),
+            },
+            unit_provenance=unit_policy,
+            data_contract_versions={"daily_coverage": DAILY_COVERAGE_CONTRACT_VERSION},
+            notes=[
+                "Coverage is computed from one exact successful daily ingestion run.",
+                *KNOWN_COVERAGE_RISKS,
             ],
             validation_results=validation_results,
         )
@@ -761,6 +1095,7 @@ class DataWorkflow:
         start_date: str | None = None,
         end_date: str | None = None,
         resolution: str | None = None,
+        parameters: dict[str, object] | None = None,
     ) -> WorkflowResult:
         manifest = build_manifest(
             run_id=run_id,
@@ -773,6 +1108,7 @@ class DataWorkflow:
             start_date=start_date,
             end_date=end_date,
             resolution=resolution,
+            parameters=parameters,
             dry_run=True,
         )
         return WorkflowResult(manifest=manifest)
@@ -809,6 +1145,14 @@ class DataWorkflow:
             self.provider = VnstockDataProvider(self.settings)
         return self.provider
 
+    def _sanitize_provider_error(self, exc: BaseException) -> str:
+        secret = (
+            self.settings.vnstock_api_key.get_secret_value()
+            if self.settings.vnstock_api_key is not None
+            else None
+        )
+        return sanitize_error(exc, [secret] if secret else [])
+
     def _enforce_symbol_limit(
         self,
         symbols: list[str],
@@ -823,12 +1167,69 @@ class DataWorkflow:
             )
             raise SafetyLimitError(msg)
 
+    def _enforce_provider_call_limit(
+        self,
+        projected_call_count: int,
+        *,
+        allow_large_universe: bool,
+    ) -> None:
+        if (
+            projected_call_count > self.settings.max_live_provider_calls
+            and not allow_large_universe
+        ):
+            raise SafetyLimitError(
+                f"Projected {projected_call_count} provider calls, above safe default "
+                f"{self.settings.max_live_provider_calls}. Reduce symbols/date range or re-run "
+                "with --allow-large-universe only after confirming quota and runtime impact."
+            )
+
 
 def _clean_symbols(symbols: list[str]) -> list[str]:
     cleaned = [symbol.strip().upper() for symbol in symbols if symbol.strip()]
     if not cleaned:
         raise ValueError("At least one symbol is required.")
     return cleaned
+
+
+def daily_date_chunks(
+    start: date,
+    end: date,
+    *,
+    chunk_calendar_days: int,
+) -> list[tuple[date, date]]:
+    if start > end:
+        raise ValueError("Daily backfill start date must not be after end date.")
+    if chunk_calendar_days < 1:
+        raise ValueError("chunk_calendar_days must be positive.")
+    if chunk_calendar_days > MAX_SAFE_DAILY_CHUNK_CALENDAR_DAYS:
+        raise ValueError(
+            "chunk_calendar_days cannot exceed the conservative 1,095-day safety boundary."
+        )
+    chunks: list[tuple[date, date]] = []
+    cursor = start
+    while cursor <= end:
+        chunk_end = min(cursor + timedelta(days=chunk_calendar_days - 1), end)
+        chunks.append((cursor, chunk_end))
+        cursor = chunk_end + timedelta(days=1)
+    return chunks
+
+
+def _validate_daily_chunk_bounds(
+    frame: pd.DataFrame,
+    *,
+    symbol: str,
+    start: date,
+    end: date,
+) -> None:
+    if frame.empty:
+        return
+    dates = pd.to_datetime(frame["date"], errors="coerce").dt.date
+    outside = dates.notna() & ~dates.between(start, end, inclusive="both")
+    if outside.any():
+        raise ValueError(
+            f"Provider returned {int(outside.sum())} {symbol} rows outside requested chunk "
+            f"{start.isoformat()}..{end.isoformat()}."
+        )
 
 
 def _status(validation_results: list[ValidationResult], errors: list[str]) -> str:
@@ -865,3 +1266,65 @@ def _select_daily_source_rows(
     return daily[
         normalized_symbols.isin(symbols) & dates.between(start, end, inclusive="both")
     ].copy()
+
+
+def _select_universe_snapshot(
+    universe: pd.DataFrame,
+    *,
+    snapshot_date: date | None,
+) -> tuple[pd.DataFrame, pd.Timestamp]:
+    if "snapshot_timestamp_utc" not in universe.columns:
+        raise ValueError("Normalized universe is missing snapshot_timestamp_utc.")
+    observed = pd.Series(
+        [
+            aware_timestamp_to_utc(value, provider="vnstock")
+            for value in universe["snapshot_timestamp_utc"]
+        ],
+        index=universe.index,
+        dtype="datetime64[ns, UTC]",
+    )
+    candidates = (
+        universe[observed.dt.date == snapshot_date].copy()
+        if snapshot_date is not None
+        else universe[observed.notna()].copy()
+    )
+    if candidates.empty:
+        target = snapshot_date.isoformat() if snapshot_date else "any valid date"
+        raise ValueError(f"No normalized universe snapshot was found for {target}.")
+    candidate_times = pd.Series(
+        [
+            aware_timestamp_to_utc(value, provider="vnstock")
+            for value in candidates["snapshot_timestamp_utc"]
+        ],
+        index=candidates.index,
+        dtype="datetime64[ns, UTC]",
+    )
+    selected_timestamp = candidate_times.max()
+    selected = candidates[candidate_times == selected_timestamp].copy()
+    return selected, pd.Timestamp(selected_timestamp)
+
+
+def _coverage_symbol_count(
+    daily: pd.DataFrame,
+    *,
+    current_universe_symbols: set[str],
+    requested_symbols: set[str],
+    start: date,
+    end: date,
+) -> int:
+    dates = pd.to_datetime(daily["date"], errors="coerce").dt.normalize()
+    in_scope = (
+        dates.between(pd.Timestamp(start), pd.Timestamp(end), inclusive="both") | dates.isna()
+    )
+    symbols = (
+        daily.loc[in_scope, "symbol"]
+        .dropna()
+        .astype("string")
+        .str.strip()
+        .str.upper()
+    )
+    observed = {str(symbol) for symbol in symbols if str(symbol)}
+    normalized_requested = {
+        symbol.strip().upper() for symbol in requested_symbols if symbol.strip()
+    }
+    return len(current_universe_symbols | normalized_requested | observed)

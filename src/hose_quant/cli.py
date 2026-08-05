@@ -8,7 +8,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from hose_quant.config import AppSettings, MissingCredentialError, load_settings
-from hose_quant.data.models import LiquidityScreenConfig
+from hose_quant.data.models import DailyCoverageConfig, LiquidityScreenConfig
 from hose_quant.data.validators import has_blocking_errors
 from hose_quant.data.vnstock_adapter import VnstockCapabilityAuditor
 from hose_quant.data.workflows import DataWorkflow, SafetyLimitError
@@ -45,6 +45,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     daily.add_argument("--start", required=True, help="Start date as YYYY-MM-DD.")
     daily.add_argument("--end", required=True, help="End date as YYYY-MM-DD.")
+    daily.add_argument(
+        "--chunk-calendar-days",
+        type=int,
+        default=None,
+        help=(
+            "Maximum calendar days per provider request; defaults to the configured safe "
+            "two-year chunk."
+        ),
+    )
     daily.add_argument("--allow-large-universe", action="store_true")
     daily.add_argument("--dry-run", action="store_true")
 
@@ -98,6 +107,14 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     prepare.add_argument("--with-liquidity", action="store_true")
+    prepare.add_argument(
+        "--daily-run-id",
+        default=None,
+        help=(
+            "Use normalized daily files from exactly one ingestion run, avoiding legacy/new "
+            "provenance mixing."
+        ),
+    )
     prepare.add_argument("--liquidity-reference-date", default=None)
     prepare.add_argument("--window-weekdays", type=int, default=None)
     prepare.add_argument("--min-history-observations", type=int, default=None)
@@ -133,6 +150,36 @@ def build_parser() -> argparse.ArgumentParser:
     )
     panel.add_argument("--start", required=True, help="Start date as YYYY-MM-DD.")
     panel.add_argument("--end", required=True, help="End date as YYYY-MM-DD.")
+    panel.add_argument(
+        "--daily-run-id",
+        default=None,
+        help="Use normalized daily files from exactly one ingestion run.",
+    )
+
+    coverage = data_subparsers.add_parser(
+        "audit-daily-coverage",
+        help="Audit one successful local daily ingestion run against a HOSE snapshot.",
+        description=(
+            "Audit coverage, quality, staleness, and unit provenance without provider calls. "
+            "The source must be exactly one successful data backfill-daily run."
+        ),
+    )
+    coverage.add_argument(
+        "--daily-run-id",
+        required=True,
+        help="Exact successful backfill-daily run ID to audit.",
+    )
+    coverage.add_argument("--start", required=True, help="Audit start date as YYYY-MM-DD.")
+    coverage.add_argument("--end", required=True, help="Audit end date as YYYY-MM-DD.")
+    coverage.add_argument(
+        "--snapshot-date",
+        default=None,
+        help="Observed universe snapshot date; defaults to the latest local snapshot.",
+    )
+    coverage.add_argument("--min-history-observations", type=int, default=None)
+    coverage.add_argument("--min-span-coverage-ratio", type=float, default=None)
+    coverage.add_argument("--stale-after-calendar-days", type=int, default=None)
+    coverage.add_argument("--max-zero-volume-frequency", type=float, default=None)
     return parser
 
 
@@ -206,6 +253,7 @@ def _run_data_command(args: argparse.Namespace, settings: AppSettings) -> int:
                 symbols=_split_symbols(args.symbols),
                 start=_parse_date(args.start),
                 end=_parse_date(args.end),
+                chunk_calendar_days=args.chunk_calendar_days,
                 allow_large_universe=args.allow_large_universe,
                 dry_run=args.dry_run,
             )
@@ -233,12 +281,22 @@ def _run_data_command(args: argparse.Namespace, settings: AppSettings) -> int:
                 with_liquidity=args.with_liquidity,
                 liquidity_reference_date=_parse_optional_date(args.liquidity_reference_date),
                 liquidity_config=_liquidity_config(args, settings),
+                daily_run_id=args.daily_run_id,
             )
         elif args.data_command == "build-daily-panel":
             result = workflow.build_daily_panel(
                 symbols=_split_symbols(args.symbols) if args.symbols else None,
                 start=_parse_date(args.start),
                 end=_parse_date(args.end),
+                daily_run_id=args.daily_run_id,
+            )
+        elif args.data_command == "audit-daily-coverage":
+            result = workflow.audit_daily_coverage(
+                daily_run_id=args.daily_run_id,
+                start=_parse_date(args.start),
+                end=_parse_date(args.end),
+                snapshot_date=_parse_optional_date(args.snapshot_date),
+                config=_daily_coverage_config(args, settings),
             )
         else:
             raise ValueError(f"Unknown data command: {args.data_command}")
@@ -248,6 +306,9 @@ def _run_data_command(args: argparse.Namespace, settings: AppSettings) -> int:
 
     print(f"Status: {result.manifest.status}")
     print(f"Run ID: {result.manifest.run_id}")
+    if result.manifest.dry_run:
+        for key, value in sorted(result.manifest.parameters.items()):
+            print(f"Plan {key}: {value}")
     if result.manifest_path:
         print(f"Manifest: {result.manifest_path}")
     for path in result.manifest.output_paths:
@@ -306,6 +367,34 @@ def _liquidity_config(
             args.min_average_traded_value_vnd
             if args.min_average_traded_value_vnd is not None
             else settings.liquidity_min_average_traded_value_vnd
+        ),
+    )
+
+
+def _daily_coverage_config(
+    args: argparse.Namespace,
+    settings: AppSettings,
+) -> DailyCoverageConfig:
+    return DailyCoverageConfig(
+        min_history_observations=(
+            args.min_history_observations
+            if args.min_history_observations is not None
+            else settings.daily_coverage_min_history_observations
+        ),
+        min_span_coverage_ratio=(
+            args.min_span_coverage_ratio
+            if args.min_span_coverage_ratio is not None
+            else settings.daily_coverage_min_span_ratio
+        ),
+        stale_after_calendar_days=(
+            args.stale_after_calendar_days
+            if args.stale_after_calendar_days is not None
+            else settings.daily_coverage_stale_after_days
+        ),
+        max_zero_volume_frequency=(
+            args.max_zero_volume_frequency
+            if args.max_zero_volume_frequency is not None
+            else settings.daily_coverage_max_zero_volume_frequency
         ),
     )
 

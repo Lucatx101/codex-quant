@@ -10,6 +10,7 @@ UNIVERSE_CONTRACT_VERSION = "research-universe-v1"
 DAILY_PANEL_CONTRACT_VERSION = "daily-panel-v2"
 LIQUIDITY_CONTRACT_VERSION = "liquidity-characterization-v2"
 AVAILABILITY_CONTRACT_VERSION = "daily-availability-v1"
+DAILY_COVERAGE_CONTRACT_VERSION = "daily-coverage-v1"
 
 
 class DataContract(BaseModel):
@@ -237,6 +238,98 @@ AVAILABILITY_CONTRACT = DataContract(
     },
 )
 
+DAILY_COVERAGE_CONTRACT = DataContract(
+    name="daily_coverage",
+    version=DAILY_COVERAGE_CONTRACT_VERSION,
+    key_columns=["symbol", "universe_snapshot_date", "daily_run_id"],
+    ordering=["coverage_status", "symbol"],
+    required_columns=[
+        "feature_input_contract_version",
+        "symbol",
+        "universe_snapshot_date",
+        "current_universe_snapshot_status",
+        "source_run_request_status",
+        "daily_run_id",
+        "requested_start_date",
+        "requested_end_date",
+        "first_observation_date",
+        "last_observation_date",
+        "observation_count",
+        "unique_observation_date_count",
+        "duplicate_row_count",
+        "conflicting_duplicate_date_count",
+        "source_file_count",
+        "requested_weekday_count",
+        "requested_weekday_coverage_ratio",
+        "observed_span_weekday_count",
+        "observed_span_missing_weekday_count",
+        "observed_span_coverage_ratio",
+        "longest_missing_weekday_streak",
+        "weekend_observation_count",
+        "invalid_date_count",
+        "missing_ohlc_count",
+        "invalid_ohlc_count",
+        "missing_volume_count",
+        "negative_volume_count",
+        "non_integer_volume_count",
+        "zero_volume_count",
+        "zero_volume_frequency",
+        "stale_calendar_days",
+        "stale",
+        "minimum_history_observations",
+        "minimum_span_coverage_ratio",
+        "maximum_zero_volume_frequency",
+        "provider",
+        "data_backend",
+        "unit_provenance_status",
+        "unit_verification_status",
+        "unit_policy_name",
+        "unit_policy_version",
+        "price_unit",
+        "volume_unit",
+        "traded_value_unit",
+        "unit_evidence_reference",
+        "unit_verification_reason",
+        "vnd_traded_value_permitted",
+        "raw_ohlcv_research_usable",
+        "vnd_liquidity_research_usable",
+        "adjusted_price_research_usable",
+        "point_in_time_universe_research_usable",
+        "coverage_status",
+        "coverage_reasons",
+        "known_risks",
+    ],
+    nullable_columns=[
+        "first_observation_date",
+        "last_observation_date",
+        "requested_weekday_coverage_ratio",
+        "observed_span_coverage_ratio",
+        "zero_volume_frequency",
+        "stale_calendar_days",
+        "provider",
+        "data_backend",
+        "unit_evidence_reference",
+    ],
+    semantics={
+        "membership": (
+            "Universe status is from one current provider snapshot and is not historical "
+            "point-in-time membership."
+        ),
+        "sessions": (
+            "Coverage uses weekdays only; Vietnamese holidays, closures, and symbol halts are "
+            "not modeled."
+        ),
+        "usability": (
+            "Raw OHLCV usability does not verify adjusted-price or corporate-action semantics."
+        ),
+        "source_scope": (
+            "Not-ingested symbols were outside the source run request and are not provider-empty "
+            "responses."
+        ),
+        "money": "VND usability requires registered unit provenance on the selected daily run.",
+    },
+)
+
 
 def contract_versions() -> dict[str, str]:
     return {
@@ -244,5 +337,6 @@ def contract_versions() -> dict[str, str]:
         "daily_panel": DAILY_PANEL_CONTRACT_VERSION,
         "liquidity": LIQUIDITY_CONTRACT_VERSION,
         "availability": AVAILABILITY_CONTRACT_VERSION,
+        "daily_coverage": DAILY_COVERAGE_CONTRACT_VERSION,
         "market_time": MARKET_TIME_POLICY_VERSION,
     }

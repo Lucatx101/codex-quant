@@ -32,6 +32,7 @@ from hose_quant.data.unit_provenance import (
 from hose_quant.logging import redact_value
 
 TEST_SYMBOLS = ["VNINDEX", "FPT", "HPG", "VCB"]
+DAILY_OHLCV_MAX_BARS_PER_REQUEST = 1000
 DOCUMENTATION_SOURCES = [
     "https://vnstocks.com/docs",
     "https://vnstocks.com/docs/vnstock/du-lieu-thi-truong-market-data",
@@ -42,14 +43,18 @@ DOCUMENTATION_SOURCES = [
 ]
 
 
+class ProviderProcessTerminatedError(RuntimeError):
+    """Raised when the provider library attempts to terminate the caller process."""
+
+
 def sanitize_error(exc: BaseException, secrets: list[str] | None = None) -> str:
-    text = f"{type(exc).__name__}: {exc}"
+    text = _exception_text(exc)
     text = str(redact_value(text, secrets))
     return text[:500]
 
 
 def categorize_exception(exc: BaseException) -> ErrorCategory:
-    text = f"{type(exc).__name__}: {exc}".lower()
+    text = _exception_text(exc).lower()
     if isinstance(exc, TimeoutError) or "timeout" in text or "timed out" in text:
         return ErrorCategory.TIMEOUT
     if isinstance(exc, ImportError) or "no module named" in text:
@@ -75,6 +80,27 @@ def categorize_exception(exc: BaseException) -> ErrorCategory:
     ):
         return ErrorCategory.NETWORK
     return ErrorCategory.PROVIDER
+
+
+def _exception_text(exc: BaseException) -> str:
+    retry_attempt = getattr(exc, "last_attempt", None)
+    retry_exception = getattr(retry_attempt, "exception", None)
+    root = retry_exception() if callable(retry_exception) else None
+    if not isinstance(root, BaseException):
+        root = exc
+
+    chain: list[BaseException] = [root]
+    current = root
+    while len(chain) < 4:
+        nested = current.__cause__ or current.__context__
+        if nested is None or any(nested is item for item in chain):
+            break
+        chain.append(nested)
+        current = nested
+    details = " <- ".join(f"{type(item).__name__}: {item}" for item in chain)
+    if root is exc:
+        return details
+    return f"{type(exc).__name__}; caused by {details}"
 
 
 def status_from_error(category: ErrorCategory) -> CapabilityStatus:
@@ -704,23 +730,30 @@ class VnstockDataProvider:
         self.call_count = 0
         self._market: Any | None = None
         self._reference: Any | None = None
+        self._last_call_started_monotonic: float | None = None
 
     def _ensure_client(self) -> tuple[Any, Any]:
         if self._market is not None and self._reference is not None:
             return self._market, self._reference
 
         api_key = self.settings.require_vnstock_api_key()
-        with (
-            contextlib.redirect_stdout(io.StringIO()),
-            contextlib.redirect_stderr(io.StringIO()),
-        ):
-            vnstock = importlib.import_module("vnstock")
-            change_api_key = getattr(vnstock, "change_api_key", None)
-            if callable(change_api_key):
-                change_api_key(api_key)
-            market_module = importlib.import_module("vnstock.ui")
-            self._market = market_module.Market()
-            self._reference = market_module.Reference()
+        try:
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                vnstock = importlib.import_module("vnstock")
+                change_api_key = getattr(vnstock, "change_api_key", None)
+                if callable(change_api_key):
+                    change_api_key(api_key)
+                market_module = importlib.import_module("vnstock.ui")
+                self._market = market_module.Market()
+                self._reference = market_module.Reference()
+        except SystemExit as exc:  # pragma: no cover - live-provider dependent.
+            raise ProviderProcessTerminatedError(
+                "Provider library terminated during client setup; aborting because a "
+                "rate-limit or authentication shutdown may have occurred."
+            ) from exc
         return self._market, self._reference
 
     def fetch_universe(self, exchange: str) -> pd.DataFrame:
@@ -739,7 +772,7 @@ class VnstockDataProvider:
                 start=start.isoformat(),
                 end=end.isoformat(),
                 resolution="1D",
-                count=1000,
+                count=DAILY_OHLCV_MAX_BARS_PER_REQUEST,
                 source=VNSTOCK_KBS_DATA_BACKEND,
             )
         )
@@ -786,9 +819,15 @@ class VnstockDataProvider:
     def _call(self, func: Callable[[], Any]) -> Any:
         last_exc: BaseException | None = None
         for attempt in range(1, self.settings.max_retry_attempts + 1):
+            self._wait_for_provider_slot()
             try:
                 self.call_count += 1
                 result = func()
+            except SystemExit as exc:  # pragma: no cover - live-provider dependent.
+                raise ProviderProcessTerminatedError(
+                    "Provider library terminated the request; aborting the run because a "
+                    "rate-limit or authentication shutdown may have occurred."
+                ) from exc
             except Exception as exc:  # pragma: no cover - live-provider dependent.
                 last_exc = exc
                 category = categorize_exception(exc)
@@ -808,3 +847,12 @@ class VnstockDataProvider:
         if last_exc:
             raise last_exc
         raise RuntimeError("Provider call did not execute.")
+
+    def _wait_for_provider_slot(self) -> None:
+        delay = self.settings.provider_sleep_seconds
+        now = time.monotonic()
+        if delay and self._last_call_started_monotonic is not None:
+            remaining = delay - (now - self._last_call_started_monotonic)
+            if remaining > 0:
+                time.sleep(remaining)
+        self._last_call_started_monotonic = time.monotonic()

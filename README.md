@@ -6,7 +6,8 @@
 
 Phase 0 bootstrapped the repository and implemented a reproducible `vnstock` capability audit.
 
-Phase 1 adds the provider data foundation. Phase 2 adds a local-only feature-input layer:
+Phase 1 adds the provider data foundation. Phase 2 adds a local-only feature-input layer, and
+Phase 2.2 hardens daily re-ingestion and coverage auditing:
 
 - small-universe daily OHLCV backfills;
 - small-universe intraday fetches;
@@ -19,6 +20,8 @@ Phase 1 adds the provider data foundation. Phase 2 adds a local-only feature-inp
 - configurable backward-looking liquidity characterization;
 - typed long-form daily panels;
 - per-symbol availability diagnostics;
+- rate-aware, date-chunked daily re-ingestion with all-or-nothing normalized publication;
+- exact-run HOSE coverage, quality, staleness, and unit-provenance audits;
 - explicit market-time, adjustment, unit, and point-in-time uncertainty.
 
 No strategy, signal, label, backtesting, machine-learning, live trading, portfolio construction,
@@ -75,7 +78,7 @@ Provider data commands:
 
 ```bash
 python3 -m hose_quant.cli data fetch-universe --exchange HOSE
-python3 -m hose_quant.cli data backfill-daily --symbols FPT,HPG,VCB --start 2025-01-01 --end 2026-07-03
+python3 -m hose_quant.cli data backfill-daily --symbols FPT,HPG,VCB --start 2020-01-01 --end 2026-07-03 --chunk-calendar-days 730
 python3 -m hose_quant.cli data fetch-intraday --symbols FPT --resolution 1m --lookback-days 1
 python3 -m hose_quant.cli data snapshot-quotes --symbols FPT,HPG,VCB
 python3 -m hose_quant.cli data validate
@@ -89,10 +92,13 @@ Feature-input commands use only local normalized Parquet and never require crede
 python3 -m hose_quant.cli data prepare-universe --snapshot-date 2026-07-04
 python3 -m hose_quant.cli data prepare-universe --snapshot-date 2026-07-04 --with-liquidity --liquidity-reference-date 2026-07-02
 python3 -m hose_quant.cli data build-daily-panel --symbols FPT,HPG,VCB --start 2026-05-04 --end 2026-07-02
+python3 -m hose_quant.cli data audit-daily-coverage --daily-run-id RUN_ID --start 2020-01-01 --end 2026-07-03 --snapshot-date 2026-07-04
 ```
 
 See [docs/feature-input-layer.md](docs/feature-input-layer.md) for contracts, unit provenance,
-point-in-time limitations, and screening options.
+point-in-time limitations, and screening options. See
+[docs/reingestion-coverage-audit.md](docs/reingestion-coverage-audit.md) for the Phase 2.2
+re-ingestion and audit runbook.
 
 ## Reports
 
@@ -100,6 +106,7 @@ point-in-time limitations, and screening options.
 - Markdown: `docs/data-capability-report.md`
 - Data-quality reports: `reports/data_quality/latest.json` and `reports/data_quality/latest.md` when `data validate` is run
 - Feature-input diagnostics: `reports/feature_inputs/` when a daily panel is built
+- Daily coverage audits: `reports/data_quality/*-daily-coverage.{json,md}`
 
 Reports must not contain credentials, raw auth headers, or generated market data.
 

@@ -35,9 +35,18 @@ class AppSettings(BaseSettings):
     )
     max_retry_attempts: int = Field(default=2, ge=1, le=5, validation_alias="MAX_RETRY_ATTEMPTS")
     provider_sleep_seconds: float = Field(
-        default=0.0, ge=0, validation_alias="PROVIDER_SLEEP_SECONDS"
+        default=2.1, ge=0, validation_alias="PROVIDER_SLEEP_SECONDS"
     )
     max_quote_symbols: int = Field(default=20, ge=1, validation_alias="MAX_QUOTE_SYMBOLS")
+    max_live_provider_calls: int = Field(
+        default=40, ge=1, validation_alias="MAX_LIVE_PROVIDER_CALLS"
+    )
+    daily_backfill_chunk_calendar_days: int = Field(
+        default=730,
+        ge=30,
+        le=1095,
+        validation_alias="DAILY_BACKFILL_CHUNK_CALENDAR_DAYS",
+    )
     liquidity_window_weekdays: int = Field(
         default=20, ge=1, validation_alias="LIQUIDITY_WINDOW_WEEKDAYS"
     )
@@ -57,6 +66,28 @@ class AppSettings(BaseSettings):
         default=None,
         ge=0,
         validation_alias="LIQUIDITY_MIN_AVERAGE_TRADED_VALUE_VND",
+    )
+    daily_coverage_min_history_observations: int = Field(
+        default=500,
+        ge=1,
+        validation_alias="DAILY_COVERAGE_MIN_HISTORY_OBSERVATIONS",
+    )
+    daily_coverage_min_span_ratio: float = Field(
+        default=0.9,
+        ge=0,
+        le=1,
+        validation_alias="DAILY_COVERAGE_MIN_SPAN_RATIO",
+    )
+    daily_coverage_stale_after_days: int = Field(
+        default=7,
+        ge=0,
+        validation_alias="DAILY_COVERAGE_STALE_AFTER_DAYS",
+    )
+    daily_coverage_max_zero_volume_frequency: float = Field(
+        default=0.2,
+        ge=0,
+        le=1,
+        validation_alias="DAILY_COVERAGE_MAX_ZERO_VOLUME_FREQUENCY",
     )
     provider: str = Field(default="vnstock", validation_alias="PROVIDER")
 
@@ -97,6 +128,8 @@ class AppSettings(BaseSettings):
             "max_retry_attempts": self.max_retry_attempts,
             "provider_sleep_seconds": self.provider_sleep_seconds,
             "max_quote_symbols": self.max_quote_symbols,
+            "max_live_provider_calls": self.max_live_provider_calls,
+            "daily_backfill_chunk_calendar_days": self.daily_backfill_chunk_calendar_days,
             "liquidity_window_weekdays": self.liquidity_window_weekdays,
             "liquidity_min_history_observations": self.liquidity_min_history_observations,
             "liquidity_min_trading_frequency": self.liquidity_min_trading_frequency,
@@ -110,6 +143,14 @@ class AppSettings(BaseSettings):
                 self.liquidity_min_average_traded_value_vnd
                 if self.liquidity_min_average_traded_value_vnd is not None
                 else "unset"
+            ),
+            "daily_coverage_min_history_observations": (
+                self.daily_coverage_min_history_observations
+            ),
+            "daily_coverage_min_span_ratio": self.daily_coverage_min_span_ratio,
+            "daily_coverage_stale_after_days": self.daily_coverage_stale_after_days,
+            "daily_coverage_max_zero_volume_frequency": (
+                self.daily_coverage_max_zero_volume_frequency
             ),
             "provider": self.provider,
         }

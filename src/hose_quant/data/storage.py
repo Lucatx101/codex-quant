@@ -6,6 +6,8 @@ from typing import Any
 
 import pandas as pd
 
+from hose_quant.data.models import DatasetManifest
+
 
 class DataStorage:
     def __init__(self, data_dir: Path) -> None:
@@ -30,6 +32,7 @@ class DataStorage:
             self.feature_input_root / "daily_panel",
             self.feature_input_root / "liquidity",
             self.feature_input_root / "availability",
+            self.feature_input_root / "coverage",
         ]:
             path.mkdir(parents=True, exist_ok=True)
 
@@ -113,6 +116,23 @@ class DataStorage:
             / f"{run_id}.parquet"
         )
 
+    def feature_daily_coverage_path(
+        self,
+        *,
+        snapshot_date: date,
+        start: date,
+        end: date,
+        run_id: str,
+    ) -> Path:
+        return (
+            self.feature_input_root
+            / "coverage"
+            / f"snapshot_date={snapshot_date.isoformat()}"
+            / f"start_date={start.isoformat()}"
+            / f"end_date={end.isoformat()}"
+            / f"{run_id}.parquet"
+        )
+
     def write_parquet(self, frame: pd.DataFrame, path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         frame.to_parquet(path, index=False)
@@ -145,24 +165,51 @@ class DataStorage:
             output_paths.append(self.write_parquet(group.reset_index(drop=True), path))
         return output_paths
 
-    def read_normalized_dataset(self, dataset: str) -> pd.DataFrame | None:
-        result = self.read_normalized_dataset_with_provenance(dataset)
+    def read_normalized_dataset(
+        self,
+        dataset: str,
+        *,
+        run_id: str | None = None,
+    ) -> pd.DataFrame | None:
+        result = self.read_normalized_dataset_with_provenance(dataset, run_id=run_id)
         if result is None:
             return None
         frame, _paths = result
         return frame.drop(columns=["__input_path"], errors="ignore")
 
-    def normalized_dataset_paths(self, dataset: str) -> list[Path]:
+    def normalized_dataset_paths(
+        self,
+        dataset: str,
+        *,
+        run_id: str | None = None,
+    ) -> list[Path]:
         dataset_dir = self.normalized_root / dataset
         if not dataset_dir.exists():
             return []
-        return sorted(dataset_dir.glob("**/*.parquet"))
+        paths = sorted(dataset_dir.glob("**/*.parquet"))
+        if run_id is None:
+            return paths
+        return [path for path in paths if path.stem == run_id]
+
+    def normalized_dataset_run_ids(self, dataset: str) -> list[str]:
+        return sorted({path.stem for path in self.normalized_dataset_paths(dataset)})
+
+    def manifest_path(self, run_id: str) -> Path:
+        return self.manifest_root / f"{run_id}.json"
+
+    def read_manifest(self, run_id: str) -> DatasetManifest | None:
+        path = self.manifest_path(run_id)
+        if not path.exists():
+            return None
+        return DatasetManifest.model_validate_json(path.read_text(encoding="utf-8"))
 
     def read_normalized_dataset_with_provenance(
         self,
         dataset: str,
+        *,
+        run_id: str | None = None,
     ) -> tuple[pd.DataFrame, list[Path]] | None:
-        paths = self.normalized_dataset_paths(dataset)
+        paths = self.normalized_dataset_paths(dataset, run_id=run_id)
         if not paths:
             return None
         frames = []

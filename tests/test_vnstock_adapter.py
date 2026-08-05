@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 from pydantic import SecretStr
 
 from hose_quant.config import AppSettings
@@ -11,7 +12,9 @@ from hose_quant.data.models import (
     PackageInspection,
 )
 from hose_quant.data.vnstock_adapter import (
+    ProviderProcessTerminatedError,
     VnstockCapabilityAuditor,
+    VnstockDataProvider,
     categorize_exception,
     inspect_dataframe,
     sanitize_error,
@@ -102,3 +105,33 @@ def test_sanitized_error_redacts_known_secret() -> None:
     message = sanitize_error(RuntimeError("bad key secret-123"), ["secret-123"])
     assert "secret-123" not in message
     assert "[REDACTED]" in message
+
+
+def test_provider_system_exit_is_converted_to_typed_error(tmp_path) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        report_dir=tmp_path / "reports",
+        provider_sleep_seconds=0,
+    )
+    provider = VnstockDataProvider(settings)
+
+    def terminate() -> None:
+        raise SystemExit(1)
+
+    with pytest.raises(ProviderProcessTerminatedError, match="aborting the run"):
+        provider._call(terminate)
+
+
+def test_retry_error_sanitization_includes_root_network_cause() -> None:
+    class Attempt:
+        @staticmethod
+        def exception() -> BaseException:
+            return ConnectionError("DNS resolution failed")
+
+    error = RuntimeError("opaque retry wrapper")
+    error.last_attempt = Attempt()  # type: ignore[attr-defined]
+
+    message = sanitize_error(error)
+    assert "ConnectionError: DNS resolution failed" in message
+    assert categorize_exception(error) is ErrorCategory.NETWORK

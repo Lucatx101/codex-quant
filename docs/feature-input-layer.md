@@ -8,7 +8,7 @@ or UI code.
 
 The layer extends the existing data architecture instead of creating a second pipeline:
 
-- `contracts.py` defines versioned universe, daily-panel, liquidity, availability, and
+- `contracts.py` defines versioned universe, daily-panel, liquidity, availability, coverage, and
   market-time contracts.
 - `feature_inputs.py` contains deterministic DataFrame transformations and report rendering.
 - `unit_provenance.py` owns the versioned daily-unit registry and derives effective monetary
@@ -24,7 +24,7 @@ normalized storage.
 
 ## Commands
 
-All Phase 2 commands read local normalized data and make zero provider calls.
+The feature-input commands below read local normalized data and make zero provider calls.
 
 ```bash
 # Latest local snapshot, with no historical membership claim
@@ -51,10 +51,21 @@ python3 -m hose_quant.cli data build-daily-panel \
   --symbols FPT,HPG,VCB \
   --start 2026-05-04 \
   --end 2026-07-02
+
+# Audit exactly one successful provenance-aware daily run against a current snapshot
+python3 -m hose_quant.cli data audit-daily-coverage \
+  --daily-run-id 20260805T000000Z-backfill-daily \
+  --start 2020-01-01 \
+  --end 2026-08-04 \
+  --snapshot-date 2026-08-05
 ```
 
 `prepare-universe --help` lists every configurable threshold. Omitting `--symbols` from
 `build-daily-panel` selects all symbols present in local daily storage.
+
+`audit-daily-coverage` refuses a missing, failed, or non-backfill source manifest and reads only
+Parquet files whose filename matches the requested `daily_run_id`. It never merges legacy and new
+runs implicitly.
 
 ## Universe Contract
 
@@ -156,6 +167,31 @@ The expected-session model is deliberately named `weekdays_only`. Vietnamese pub
 not silently classified as exchange-confirmed missing sessions; reports state that the holiday
 calendar is incomplete.
 
+## Daily Coverage Audit
+
+The `daily-coverage-v1` contract compares one successful normalized daily run with included stock
+candidates from one observed HOSE universe snapshot. Every current candidate receives a row even
+when it has no daily data. Symbols observed in the run but absent from the selected current
+snapshot remain visible as `not_in_selected_current_snapshot` rather than being silently dropped.
+
+Per-symbol diagnostics include first and last dates, observations, duplicate and conflicting
+dates, invalid dates and OHLCV, zero-volume frequency, weekend rows, weekday span coverage,
+longest missing weekday streak, staleness, source file count, exact unit policy, and explicit
+research-usability flags. Status is one of `absent`, `blocking_quality_issues`, `stale`,
+`not_ingested`, `insufficient_history`, `sparse`, `usable_non_monetary`, or `usable_vnd`.
+`not_ingested` means the symbol was outside the source manifest request; `absent` means it was
+requested but produced no observations.
+
+Defaults require 500 observations, 90 percent weekday coverage within the observed span, no more
+than 20 percent zero-volume rows, and a last observation no more than seven calendar days before
+the requested audit end. Weekday coverage is a diagnostic approximation: Vietnamese holidays,
+exchange closures, and symbol halts are not removed.
+
+`usable_vnd` means raw OHLCV passed those thresholds and every selected symbol row carries the
+registered KBS unit provenance. It does not verify adjusted-price semantics, corporate-action
+completeness, historical membership, or survivorship-safe research. The corresponding adjusted
+price and point-in-time universe usability fields always remain false.
+
 ## Market Time
 
 The target convention is `Asia/Ho_Chi_Minh`. Daily dates remain unlocalized provider trading-date
@@ -178,8 +214,11 @@ data/feature_inputs/vnstock/universe/snapshot_date=YYYY-MM-DD/*.parquet
 data/feature_inputs/vnstock/daily_panel/start_date=YYYY-MM-DD/end_date=YYYY-MM-DD/*.parquet
 data/feature_inputs/vnstock/liquidity/reference_date=YYYY-MM-DD/*.parquet
 data/feature_inputs/vnstock/availability/start_date=YYYY-MM-DD/end_date=YYYY-MM-DD/*.parquet
+data/feature_inputs/vnstock/coverage/snapshot_date=YYYY-MM-DD/start_date=YYYY-MM-DD/end_date=YYYY-MM-DD/*.parquet
 reports/feature_inputs/*-availability.json
 reports/feature_inputs/*-availability.md
+reports/data_quality/*-daily-coverage.json
+reports/data_quality/*-daily-coverage.md
 data/manifests/<run_id>.json
 ```
 
