@@ -8,6 +8,8 @@ from typing import Any
 import pandas as pd
 
 from hose_quant.data.contracts import (
+    ASSEMBLED_DAILY_CONTRACT,
+    ASSEMBLED_DAILY_CONTRACT_VERSION,
     AVAILABILITY_CONTRACT,
     DAILY_COVERAGE_CONTRACT,
     DAILY_PANEL_CONTRACT,
@@ -729,6 +731,88 @@ def validate_daily_panel(
                 check_name="deterministic_ordering",
                 message="Daily panel must be sorted by symbol/date.",
                 affected_columns=["symbol", "date"],
+                blocks_output=True,
+            )
+        )
+    return results
+
+
+def validate_assembled_daily(
+    frame: pd.DataFrame,
+    *,
+    expected_row_count: int,
+    expected_campaign_id: str,
+    expected_dataset_id: str,
+) -> list[ValidationResult]:
+    dataset_name = "assembled_daily"
+    results = _missing_columns(
+        frame,
+        dataset_name=dataset_name,
+        required_columns=set(ASSEMBLED_DAILY_CONTRACT.required_columns),
+    )
+    if results:
+        return results
+    if len(frame) != expected_row_count:
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="assembled_rows_preserved",
+                message="Assembly changed the compatible normalized source row count.",
+                affected_row_count=abs(len(frame) - expected_row_count),
+                blocks_output=True,
+            )
+        )
+    expected_values = {
+        "assembly_contract_version": ASSEMBLED_DAILY_CONTRACT_VERSION,
+        "campaign_id": expected_campaign_id,
+        "assembled_dataset_id": expected_dataset_id,
+    }
+    for column, expected in expected_values.items():
+        invalid = frame[column].astype("string") != expected
+        if invalid.any():
+            results.append(
+                _result(
+                    dataset_name=dataset_name,
+                    severity=ValidationSeverity.ERROR,
+                    check_name=f"{column}_consistent",
+                    message=f"Every assembled row must declare {column}={expected}.",
+                    affected_columns=[column],
+                    affected_row_count=int(invalid.sum()),
+                    sample_affected_keys=_sample_keys(frame[invalid], ["symbol", "date"]),
+                    blocks_output=True,
+                )
+            )
+    missing_lineage = (
+        frame["source_run_id"].isna()
+        | frame["source_normalized_path"].isna()
+        | (frame["source_run_id"].astype("string").str.strip() == "")
+        | (frame["source_normalized_path"].astype("string").str.strip() == "")
+    )
+    if missing_lineage.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="source_lineage_complete",
+                message="Every assembled row must retain its source run and normalized path.",
+                affected_columns=["source_run_id", "source_normalized_path"],
+                affected_row_count=int(missing_lineage.sum()),
+                sample_affected_keys=_sample_keys(frame[missing_lineage], ["symbol", "date"]),
+                blocks_output=True,
+            )
+        )
+    duplicates = frame.duplicated(["symbol", "date"])
+    if duplicates.any():
+        results.append(
+            _result(
+                dataset_name=dataset_name,
+                severity=ValidationSeverity.ERROR,
+                check_name="assembled_symbol_date_unique",
+                message="Assembled daily rows must be unique by symbol/date.",
+                affected_columns=["symbol", "date"],
+                affected_row_count=int(duplicates.sum()),
+                sample_affected_keys=_sample_keys(frame[duplicates], ["symbol", "date"]),
                 blocks_output=True,
             )
         )

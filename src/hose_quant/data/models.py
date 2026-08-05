@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -134,6 +134,20 @@ class DailyCoverageStatus(StrEnum):
     USABLE_VND = "usable_vnd"
 
 
+class CampaignTaskStatus(StrEnum):
+    PENDING = "pending"
+    COMPLETE = "complete"
+    EMPTY = "empty"
+    FAILED = "failed"
+    STALE = "stale"
+    INCOMPATIBLE = "incompatible"
+
+
+class CampaignReceiptOrigin(StrEnum):
+    CAMPAIGN_RUN = "campaign_run"
+    ADOPTED_RUN = "adopted_run"
+
+
 class TimestampAwarenessStatus(StrEnum):
     AWARE = "aware"
     NAIVE = "naive"
@@ -227,6 +241,148 @@ class DailyCoverageConfig(BaseModel):
     min_span_coverage_ratio: float = Field(default=0.9, ge=0, le=1)
     stale_after_calendar_days: int = Field(default=7, ge=0)
     max_zero_volume_frequency: float = Field(default=0.2, ge=0, le=1)
+
+
+class DailyCampaignTask(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    task_id: str
+    symbol: str
+    start_date: date
+    end_date: date
+
+    @model_validator(mode="after")
+    def validate_range(self) -> DailyCampaignTask:
+        if self.start_date > self.end_date:
+            raise ValueError("Campaign task start_date cannot be after end_date.")
+        return self
+
+
+class DailyCampaignPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    campaign_contract_version: str
+    campaign_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{2,63}$")
+    provider: str
+    data_backend: str
+    exchange: str
+    source_resolution: str
+    normalized_daily_contract_version: str
+    price_adjustment_semantics: str
+    expected_adjusted_flag: bool | None = None
+    universe_snapshot_date: date
+    universe_snapshot_observed_at_utc: datetime
+    universe_run_ids: list[str]
+    universe_input_paths: list[str]
+    start_date: date
+    end_date: date
+    chunk_calendar_days: int = Field(ge=1)
+    stale_after_calendar_days: int = Field(ge=0)
+    symbols: list[str]
+    expected_unit_provenance: DailyUnitProvenance
+    tasks: list[DailyCampaignTask]
+    created_at_utc: datetime = Field(default_factory=utc_now)
+
+    @model_validator(mode="after")
+    def validate_plan(self) -> DailyCampaignPlan:
+        if self.start_date > self.end_date:
+            raise ValueError("Campaign start_date cannot be after end_date.")
+        if self.end_date > self.universe_snapshot_date:
+            raise ValueError("Campaign end_date cannot be after its observed universe snapshot.")
+        if self.symbols != sorted(set(self.symbols)) or any(
+            symbol != symbol.strip().upper() for symbol in self.symbols
+        ):
+            raise ValueError("Campaign symbols must be sorted, unique, normalized symbols.")
+        if not self.symbols:
+            raise ValueError("Campaign must contain at least one symbol.")
+        provenance = self.expected_unit_provenance
+        if (
+            provenance.provider != self.provider
+            or provenance.data_backend != self.data_backend
+            or provenance.source_resolution != self.source_resolution
+        ):
+            raise ValueError("Campaign source fields must match expected unit provenance.")
+        if (
+            self.price_adjustment_semantics != "unknown_provider_adjustment_flag"
+            or self.expected_adjusted_flag is not None
+        ):
+            raise ValueError(
+                "Phase 2.3 campaigns require an unknown, null provider adjustment flag."
+            )
+        task_ids = [task.task_id for task in self.tasks]
+        if len(task_ids) != len(set(task_ids)):
+            raise ValueError("Campaign task IDs must be unique.")
+        if any(task.symbol not in self.symbols for task in self.tasks):
+            raise ValueError("Every campaign task symbol must belong to the campaign universe.")
+        tasks_by_symbol = {
+            symbol: sorted(
+                (task for task in self.tasks if task.symbol == symbol),
+                key=lambda task: task.start_date,
+            )
+            for symbol in self.symbols
+        }
+        for symbol, tasks in tasks_by_symbol.items():
+            cursor = self.start_date
+            if not tasks:
+                raise ValueError(f"Campaign symbol {symbol} has no tasks.")
+            for task in tasks:
+                expected_task_id = (
+                    f"{symbol}__{task.start_date.isoformat()}__{task.end_date.isoformat()}"
+                )
+                if task.task_id != expected_task_id:
+                    raise ValueError(f"Campaign task ID is not canonical: {task.task_id}.")
+                if task.start_date != cursor:
+                    raise ValueError(f"Campaign tasks contain a gap or overlap for {symbol}.")
+                if (task.end_date - task.start_date).days + 1 > self.chunk_calendar_days:
+                    raise ValueError(f"Campaign task exceeds chunk size for {symbol}.")
+                if task.end_date > self.end_date:
+                    raise ValueError(f"Campaign task exceeds campaign range for {symbol}.")
+                cursor = task.end_date + timedelta(days=1)
+            if cursor != self.end_date + timedelta(days=1):
+                raise ValueError(f"Campaign tasks do not cover the full range for {symbol}.")
+        return self
+
+
+class DailyCampaignReceipt(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    campaign_contract_version: str
+    campaign_id: str
+    task_id: str
+    source_run_id: str
+    origin: CampaignReceiptOrigin
+    recorded_at_utc: datetime = Field(default_factory=utc_now)
+
+
+class DailyCampaignTaskAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    task_id: str
+    symbol: str
+    start_date: date
+    end_date: date
+    status: CampaignTaskStatus
+    selected_run_id: str | None = None
+    attempt_run_ids: list[str] = Field(default_factory=list)
+    observation_count: int = 0
+    first_observation_date: date | None = None
+    last_observation_date: date | None = None
+    reason_codes: list[str] = Field(default_factory=list)
+
+
+class DailyCampaignState(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    campaign_contract_version: str
+    campaign_id: str
+    updated_at_utc: datetime = Field(default_factory=utc_now)
+    task_counts: dict[str, int] = Field(default_factory=dict)
+    symbol_counts: dict[str, int] = Field(default_factory=dict)
+    source_run_ids: list[str] = Field(default_factory=list)
+    assembly_ready: bool = False
+    canonical_candidate: bool = False
+    assembled_dataset_id: str | None = None
+    tasks: list[DailyCampaignTaskAssessment] = Field(default_factory=list)
 
 
 class TimestampProvenance(BaseModel):

@@ -180,6 +180,54 @@ def build_parser() -> argparse.ArgumentParser:
     coverage.add_argument("--min-span-coverage-ratio", type=float, default=None)
     coverage.add_argument("--stale-after-calendar-days", type=int, default=None)
     coverage.add_argument("--max-zero-volume-frequency", type=float, default=None)
+
+    campaign_init = data_subparsers.add_parser(
+        "init-daily-campaign",
+        help="Create an immutable daily-ingestion plan from an observed HOSE snapshot.",
+    )
+    campaign_init.add_argument("--campaign-id", required=True)
+    campaign_init.add_argument(
+        "--snapshot-date",
+        default=None,
+        help="Observed universe snapshot date; defaults to the latest local snapshot.",
+    )
+    campaign_init.add_argument("--start", required=True, help="Start date as YYYY-MM-DD.")
+    campaign_init.add_argument("--end", required=True, help="End date as YYYY-MM-DD.")
+    campaign_init.add_argument("--chunk-calendar-days", type=int, default=None)
+
+    campaign_adopt = data_subparsers.add_parser(
+        "adopt-daily-run",
+        help="Attach a compatible successful backfill run to campaign tasks.",
+    )
+    campaign_adopt.add_argument("--campaign-id", required=True)
+    campaign_adopt.add_argument("--daily-run-id", required=True)
+
+    campaign_run = data_subparsers.add_parser(
+        "run-daily-campaign",
+        help="Run the next resumable provider-limited campaign task batch.",
+    )
+    campaign_run.add_argument("--campaign-id", required=True)
+    campaign_run.add_argument("--max-tasks", type=int, default=None)
+    campaign_run.add_argument("--retry-failed", action="store_true")
+    campaign_run.add_argument("--retry-stale", action="store_true")
+    campaign_run.add_argument("--retry-incompatible", action="store_true")
+    campaign_run.add_argument("--dry-run", action="store_true")
+
+    campaign_audit = data_subparsers.add_parser(
+        "audit-daily-campaign",
+        help="Audit campaign state and virtual compatible coverage without provider calls.",
+    )
+    campaign_audit.add_argument("--campaign-id", required=True)
+    campaign_audit.add_argument("--min-history-observations", type=int, default=None)
+    campaign_audit.add_argument("--min-span-coverage-ratio", type=float, default=None)
+    campaign_audit.add_argument("--stale-after-calendar-days", type=int, default=None)
+    campaign_audit.add_argument("--max-zero-volume-frequency", type=float, default=None)
+
+    campaign_assemble = data_subparsers.add_parser(
+        "assemble-daily-campaign",
+        help="Publish one versioned daily dataset after every campaign task resolves.",
+    )
+    campaign_assemble.add_argument("--campaign-id", required=True)
     return parser
 
 
@@ -236,6 +284,7 @@ def _run_data_command(args: argparse.Namespace, settings: AppSettings) -> int:
         "backfill-daily",
         "fetch-intraday",
         "snapshot-quotes",
+        "run-daily-campaign",
     }
     if live_command and not args.dry_run:
         try:
@@ -298,6 +347,35 @@ def _run_data_command(args: argparse.Namespace, settings: AppSettings) -> int:
                 snapshot_date=_parse_optional_date(args.snapshot_date),
                 config=_daily_coverage_config(args, settings),
             )
+        elif args.data_command == "init-daily-campaign":
+            result = workflow.init_daily_campaign(
+                campaign_id=args.campaign_id,
+                snapshot_date=_parse_optional_date(args.snapshot_date),
+                start=_parse_date(args.start),
+                end=_parse_date(args.end),
+                chunk_calendar_days=args.chunk_calendar_days,
+            )
+        elif args.data_command == "adopt-daily-run":
+            result = workflow.adopt_daily_run(
+                campaign_id=args.campaign_id,
+                daily_run_id=args.daily_run_id,
+            )
+        elif args.data_command == "run-daily-campaign":
+            result = workflow.run_daily_campaign(
+                campaign_id=args.campaign_id,
+                max_tasks=args.max_tasks,
+                retry_failed=args.retry_failed,
+                retry_stale=args.retry_stale,
+                retry_incompatible=args.retry_incompatible,
+                dry_run=args.dry_run,
+            )
+        elif args.data_command == "audit-daily-campaign":
+            result = workflow.audit_daily_campaign(
+                campaign_id=args.campaign_id,
+                config=_daily_coverage_config(args, settings),
+            )
+        elif args.data_command == "assemble-daily-campaign":
+            result = workflow.assemble_daily_campaign(campaign_id=args.campaign_id)
         else:
             raise ValueError(f"Unknown data command: {args.data_command}")
     except (SafetyLimitError, ValueError) as exc:

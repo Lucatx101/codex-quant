@@ -7,10 +7,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from hose_quant.data.market_time import MARKET_TIME_POLICY_VERSION
 
 UNIVERSE_CONTRACT_VERSION = "research-universe-v1"
+NORMALIZED_DAILY_CONTRACT_VERSION = "normalized-daily-v2"
 DAILY_PANEL_CONTRACT_VERSION = "daily-panel-v2"
 LIQUIDITY_CONTRACT_VERSION = "liquidity-characterization-v2"
 AVAILABILITY_CONTRACT_VERSION = "daily-availability-v1"
 DAILY_COVERAGE_CONTRACT_VERSION = "daily-coverage-v1"
+DAILY_CAMPAIGN_CONTRACT_VERSION = "daily-ingestion-campaign-v1"
+ASSEMBLED_DAILY_CONTRACT_VERSION = "assembled-daily-v1"
+DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION = "daily-campaign-audit-v1"
 
 
 class DataContract(BaseModel):
@@ -56,6 +60,42 @@ RESEARCH_UNIVERSE_CONTRACT = DataContract(
         "membership": "Current provider snapshot only; historical membership is not verified.",
         "candidate": "Included means research candidate, not confirmed active or tradable.",
         "row_preservation": "Every selected normalized input row has one auditable output row.",
+    },
+)
+
+NORMALIZED_DAILY_CONTRACT = DataContract(
+    name="normalized_daily",
+    version=NORMALIZED_DAILY_CONTRACT_VERSION,
+    key_columns=["symbol", "date"],
+    ordering=["symbol", "date"],
+    required_columns=[
+        "provider",
+        "symbol",
+        "exchange",
+        "date",
+        "open",
+        "high",
+        "low",
+        "close",
+        "volume",
+        "adjusted_flag",
+        "source_resolution",
+        "ingestion_timestamp_utc",
+        "data_backend",
+        "unit_provenance_schema_version",
+        "source_unit_policy_name",
+        "source_unit_policy_version",
+        "source_price_unit",
+        "source_volume_unit",
+        "source_price_scale_to_vnd",
+        "source_volume_scale_to_shares",
+        "source_unit_evidence_reference",
+    ],
+    nullable_columns=["exchange", "adjusted_flag"],
+    semantics={
+        "units": "Every campaign-compatible row has one registered source unit contract.",
+        "adjustment": "Provider adjustment status is unknown and remains null.",
+        "publication": "A backfill run publishes normalized partitions all-or-nothing.",
     },
 )
 
@@ -330,13 +370,42 @@ DAILY_COVERAGE_CONTRACT = DataContract(
     },
 )
 
+ASSEMBLED_DAILY_CONTRACT = DataContract(
+    name="assembled_daily",
+    version=ASSEMBLED_DAILY_CONTRACT_VERSION,
+    key_columns=["symbol", "date"],
+    ordering=["symbol", "date"],
+    required_columns=[
+        *DAILY_PANEL_CONTRACT.required_columns,
+        "assembly_contract_version",
+        "campaign_id",
+        "assembled_dataset_id",
+        "source_run_id",
+        "source_normalized_path",
+    ],
+    nullable_columns=list(DAILY_PANEL_CONTRACT.nullable_columns),
+    semantics={
+        "publication": "Published only after every campaign task is resolved and compatible.",
+        "lineage": "Every row retains its immutable normalized source run and path.",
+        "compatibility": (
+            "Provider, backend, resolution, unit provenance, range, and adjustment semantics "
+            "must agree before assembly."
+        ),
+        "adjustment": "No adjusted-price or corporate-action completeness claim is added.",
+    },
+)
+
 
 def contract_versions() -> dict[str, str]:
     return {
         "research_universe": UNIVERSE_CONTRACT_VERSION,
+        "normalized_daily": NORMALIZED_DAILY_CONTRACT_VERSION,
         "daily_panel": DAILY_PANEL_CONTRACT_VERSION,
         "liquidity": LIQUIDITY_CONTRACT_VERSION,
         "availability": AVAILABILITY_CONTRACT_VERSION,
         "daily_coverage": DAILY_COVERAGE_CONTRACT_VERSION,
+        "daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION,
+        "assembled_daily": ASSEMBLED_DAILY_CONTRACT_VERSION,
+        "daily_campaign_audit": DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION,
         "market_time": MARKET_TIME_POLICY_VERSION,
     }

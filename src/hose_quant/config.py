@@ -47,6 +47,11 @@ class AppSettings(BaseSettings):
         le=1095,
         validation_alias="DAILY_BACKFILL_CHUNK_CALENDAR_DAYS",
     )
+    campaign_max_tasks_per_run: int = Field(
+        default=20,
+        ge=1,
+        validation_alias="CAMPAIGN_MAX_TASKS_PER_RUN",
+    )
     liquidity_window_weekdays: int = Field(
         default=20, ge=1, validation_alias="LIQUIDITY_WINDOW_WEEKDAYS"
     )
@@ -130,6 +135,7 @@ class AppSettings(BaseSettings):
             "max_quote_symbols": self.max_quote_symbols,
             "max_live_provider_calls": self.max_live_provider_calls,
             "daily_backfill_chunk_calendar_days": self.daily_backfill_chunk_calendar_days,
+            "campaign_max_tasks_per_run": self.campaign_max_tasks_per_run,
             "liquidity_window_weekdays": self.liquidity_window_weekdays,
             "liquidity_min_history_observations": self.liquidity_min_history_observations,
             "liquidity_min_trading_frequency": self.liquidity_min_trading_frequency,

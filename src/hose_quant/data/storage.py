@@ -15,6 +15,8 @@ class DataStorage:
         self.raw_root = data_dir / "raw" / "vnstock"
         self.normalized_root = data_dir / "normalized" / "vnstock"
         self.feature_input_root = data_dir / "feature_inputs" / "vnstock"
+        self.campaign_root = data_dir / "campaigns" / "vnstock" / "daily"
+        self.assembled_root = data_dir / "assembled" / "vnstock" / "daily"
         self.cache_root = data_dir / "cache"
         self.manifest_root = data_dir / "manifests"
 
@@ -33,6 +35,8 @@ class DataStorage:
             self.feature_input_root / "liquidity",
             self.feature_input_root / "availability",
             self.feature_input_root / "coverage",
+            self.campaign_root,
+            self.assembled_root,
         ]:
             path.mkdir(parents=True, exist_ok=True)
 
@@ -133,6 +137,64 @@ class DataStorage:
             / f"{run_id}.parquet"
         )
 
+    def daily_campaign_dir(self, campaign_id: str) -> Path:
+        campaign_id = _safe_path_component(campaign_id, label="campaign_id")
+        return self.campaign_root / f"campaign_id={campaign_id}"
+
+    def daily_campaign_plan_path(self, campaign_id: str) -> Path:
+        return self.daily_campaign_dir(campaign_id) / "plan.json"
+
+    def daily_campaign_state_path(self, campaign_id: str) -> Path:
+        return self.daily_campaign_dir(campaign_id) / "state.json"
+
+    def daily_campaign_receipt_path(
+        self,
+        *,
+        campaign_id: str,
+        task_id: str,
+        run_id: str,
+    ) -> Path:
+        task_id = _safe_path_component(task_id, label="task_id")
+        run_id = _safe_path_component(run_id, label="run_id")
+        return (
+            self.daily_campaign_dir(campaign_id)
+            / "receipts"
+            / f"task_id={task_id}"
+            / f"{run_id}.json"
+        )
+
+    def daily_campaign_receipt_paths(self, campaign_id: str) -> list[Path]:
+        root = self.daily_campaign_dir(campaign_id) / "receipts"
+        return sorted(root.glob("**/*.json")) if root.exists() else []
+
+    def daily_campaign_coverage_path(self, campaign_id: str, run_id: str) -> Path:
+        return self.daily_campaign_dir(campaign_id) / "audits" / f"{run_id}-coverage.parquet"
+
+    def assembled_daily_dataset_dir(self, campaign_id: str, dataset_id: str) -> Path:
+        campaign_id = _safe_path_component(campaign_id, label="campaign_id")
+        dataset_id = _safe_path_component(dataset_id, label="dataset_id")
+        return (
+            self.assembled_root
+            / f"campaign_id={campaign_id}"
+            / f"dataset_id={dataset_id}"
+        )
+
+    def assembled_daily_symbol_path(
+        self,
+        *,
+        campaign_id: str,
+        dataset_id: str,
+        symbol: str,
+    ) -> Path:
+        return (
+            self.assembled_daily_dataset_dir(campaign_id, dataset_id)
+            / f"symbol={symbol.upper()}.parquet"
+        )
+
+    def assembled_daily_paths(self, campaign_id: str, dataset_id: str) -> list[Path]:
+        root = self.assembled_daily_dataset_dir(campaign_id, dataset_id)
+        return sorted(root.glob("symbol=*.parquet")) if root.exists() else []
+
     def write_parquet(self, frame: pd.DataFrame, path: Path) -> Path:
         path.parent.mkdir(parents=True, exist_ok=True)
         frame.to_parquet(path, index=False)
@@ -195,6 +257,7 @@ class DataStorage:
         return sorted({path.stem for path in self.normalized_dataset_paths(dataset)})
 
     def manifest_path(self, run_id: str) -> Path:
+        run_id = _safe_path_component(run_id, label="run_id")
         return self.manifest_root / f"{run_id}.json"
 
     def read_manifest(self, run_id: str) -> DatasetManifest | None:
@@ -224,3 +287,9 @@ def _coerce_date(value: Any) -> date:
     if isinstance(value, date) and not isinstance(value, datetime):
         return value
     return pd.Timestamp(value).date()
+
+
+def _safe_path_component(value: str, *, label: str) -> str:
+    if not value or value in {".", ".."} or Path(value).name != value or "\\" in value:
+        raise ValueError(f"{label} must be one safe path component.")
+    return value

@@ -39,6 +39,8 @@ temp/
 data/raw/**
 data/normalized/**
 data/feature_inputs/**
+data/campaigns/**
+data/assembled/**
 data/cache/**
 data/manifests/**
 reports/data_quality/**

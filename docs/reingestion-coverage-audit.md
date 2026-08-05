@@ -121,3 +121,6 @@ sparse symbols, duplicate/conflicting rows, staleness, source files, and unit pr
 - Corporate-action and delisting completeness remain unverified.
 - A pilot audit demonstrates the pipeline only for its stated symbols and range; it does not imply
   full HOSE historical coverage.
+
+Phase 2.3 builds full-universe resume and assembly on these immutable exact runs. See
+[universe-ingestion-campaign.md](universe-ingestion-campaign.md).

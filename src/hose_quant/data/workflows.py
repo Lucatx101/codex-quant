@@ -6,11 +6,22 @@ from pathlib import Path
 import pandas as pd
 
 from hose_quant.config import AppSettings
+from hose_quant.data.campaigns import (
+    CAMPAIGN_KNOWN_RISKS,
+    CampaignCompatibilityError,
+    CampaignIncompleteError,
+    DailyCampaignManager,
+    build_campaign_tasks,
+)
 from hose_quant.data.contracts import (
+    ASSEMBLED_DAILY_CONTRACT_VERSION,
     AVAILABILITY_CONTRACT_VERSION,
+    DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION,
+    DAILY_CAMPAIGN_CONTRACT_VERSION,
     DAILY_COVERAGE_CONTRACT_VERSION,
     DAILY_PANEL_CONTRACT_VERSION,
     LIQUIDITY_CONTRACT_VERSION,
+    NORMALIZED_DAILY_CONTRACT_VERSION,
     UNIVERSE_CONTRACT_VERSION,
 )
 from hose_quant.data.coverage import (
@@ -34,6 +45,10 @@ from hose_quant.data.feature_inputs import (
 from hose_quant.data.manifests import build_manifest, create_run_id, write_manifest
 from hose_quant.data.market_time import aware_timestamp_to_utc
 from hose_quant.data.models import (
+    CampaignReceiptOrigin,
+    CampaignTaskStatus,
+    DailyCampaignPlan,
+    DailyCampaignReceipt,
     DailyCoverageConfig,
     LiquidityScreenConfig,
     LiquidityUnitPolicy,
@@ -49,7 +64,11 @@ from hose_quant.data.normalizers import (
     normalize_universe_snapshot,
 )
 from hose_quant.data.storage import DataStorage
-from hose_quant.data.unit_provenance import resolve_daily_unit_policy
+from hose_quant.data.unit_provenance import (
+    VNSTOCK_KBS_DAILY_UNIT_PROVENANCE,
+    VNSTOCK_KBS_DATA_BACKEND,
+    resolve_daily_unit_policy,
+)
 from hose_quant.data.validators import (
     has_blocking_errors,
     validate_availability_diagnostics,
@@ -157,7 +176,14 @@ class DataWorkflow:
         chunk_calendar_days: int | None = None,
         allow_large_universe: bool = False,
         dry_run: bool = False,
+        campaign_id: str | None = None,
+        campaign_task_id: str | None = None,
+        allow_empty_success: bool = False,
     ) -> WorkflowResult:
+        if (campaign_id is None) != (campaign_task_id is None):
+            raise ValueError("campaign_id and campaign_task_id must be supplied together.")
+        if allow_empty_success and campaign_id is None:
+            raise ValueError("Empty successful daily runs are reserved for campaign tasks.")
         clean_symbols = _clean_symbols(symbols)
         self._enforce_symbol_limit(clean_symbols, allow_large_universe=allow_large_universe)
         chunk_days = (
@@ -173,6 +199,24 @@ class DataWorkflow:
         )
         started = utc_now()
         run_id = create_run_id("backfill-daily", started)
+        if campaign_task_id is not None:
+            safe_task_id = campaign_task_id.lower().replace("_", "-")
+            if not all(character.isalnum() or character == "-" for character in safe_task_id):
+                raise ValueError("campaign_task_id contains unsafe run-ID characters.")
+            run_id = f"{run_id}-{safe_task_id}-{started.strftime('%f')}"
+        base_parameters: dict[str, object] = {
+            "chunk_calendar_days": chunk_days,
+            "chunk_count_per_symbol": len(chunks),
+            "projected_provider_call_count": projected_call_count,
+            "max_retry_attempts": self.settings.max_retry_attempts,
+            "provider_call_limit": self.settings.max_live_provider_calls,
+            "provider_sleep_seconds": self.settings.provider_sleep_seconds,
+            "campaign_id": campaign_id,
+            "campaign_task_id": campaign_task_id,
+            "allow_empty_success": allow_empty_success,
+            "price_adjustment_semantics": "unknown_provider_adjustment_flag",
+            "expected_adjusted_flag": None,
+        }
         if dry_run:
             return self._dry_run_result(
                 run_id=run_id,
@@ -181,17 +225,14 @@ class DataWorkflow:
                 symbols=clean_symbols,
                 start_date=start.isoformat(),
                 end_date=end.isoformat(),
-                parameters={
-                    "chunk_calendar_days": chunk_days,
-                    "chunk_count_per_symbol": len(chunks),
-                    "projected_provider_call_count": projected_call_count,
-                    "max_retry_attempts": self.settings.max_retry_attempts,
-                    "provider_call_limit": self.settings.max_live_provider_calls,
-                    "provider_sleep_seconds": self.settings.provider_sleep_seconds,
-                },
+                parameters=base_parameters,
             )
         provider = self._require_provider()
+        provider_call_count_at_start = provider.call_count
         source_unit_provenance = provider.daily_unit_provenance()
+        base_parameters["declared_source_unit_provenance"] = (
+            source_unit_provenance.model_dump(mode="json")
+        )
         validation_results: list[ValidationResult] = []
         output_paths = []
         errors: list[str] = []
@@ -231,7 +272,7 @@ class DataWorkflow:
                     else:
                         normalized_frames.append(normalized)
                     successful_chunk_count += 1
-                except Exception as exc:
+                except (Exception, KeyboardInterrupt, SystemExit) as exc:
                     errors.append(
                         f"{symbol} {chunk_start.isoformat()}..{chunk_end.isoformat()}: "
                         f"{self._sanitize_provider_error(exc)}"
@@ -251,13 +292,27 @@ class DataWorkflow:
             if not errors and not has_blocking_errors(validation_results):
                 output_paths.extend(self.storage.write_daily_partitions(normalized_all, run_id))
         else:
+            empty_is_complete = (
+                allow_empty_success
+                and not errors
+                and successful_chunk_count == projected_call_count
+                and empty_chunk_count == projected_call_count
+            )
             validation_results.append(
                 ValidationResult(
                     dataset_name="daily",
-                    severity=ValidationSeverity.ERROR,
+                    severity=(
+                        ValidationSeverity.INFO
+                        if empty_is_complete
+                        else ValidationSeverity.ERROR
+                    ),
                     check_name="daily_observations_available",
-                    message="The provider returned no normalized daily observations.",
-                    blocks_output=True,
+                    message=(
+                        "The campaign task completed and the provider returned no observations."
+                        if empty_is_complete
+                        else "The provider returned no normalized daily observations."
+                    ),
+                    blocks_output=not empty_is_complete,
                 )
             )
         status = _status(validation_results, errors)
@@ -272,6 +327,7 @@ class DataWorkflow:
             exchange="HOSE",
             start_date=start.isoformat(),
             end_date=end.isoformat(),
+            resolution="1D",
             row_counts={
                 "raw": sum(len(frame) for frame in raw_frames),
                 "normalized": len(normalized_all),
@@ -280,18 +336,14 @@ class DataWorkflow:
                 "chunks_empty": empty_chunk_count,
             },
             output_paths=output_paths,
-            parameters={
-                "chunk_calendar_days": chunk_days,
-                "chunk_count_per_symbol": len(chunks),
-                "projected_provider_call_count": projected_call_count,
-                "provider_call_limit": self.settings.max_live_provider_calls,
-                "provider_sleep_seconds": self.settings.provider_sleep_seconds,
-                "max_retry_attempts": self.settings.max_retry_attempts,
-            },
+            parameters=base_parameters,
             unit_provenance=effective_unit_policy,
+            data_contract_versions={
+                "normalized_daily": NORMALIZED_DAILY_CONTRACT_VERSION,
+            },
             validation_results=validation_results,
             error_summary=errors,
-            provider_call_count=provider.call_count,
+            provider_call_count=provider.call_count - provider_call_count_at_start,
         )
         manifest_path = write_manifest(manifest, self.storage.manifest_root)
         return WorkflowResult(
@@ -1031,6 +1083,629 @@ class DataWorkflow:
             manifest_path=str(manifest_path),
         )
 
+    def init_daily_campaign(
+        self,
+        *,
+        campaign_id: str,
+        snapshot_date: date | None,
+        start: date,
+        end: date,
+        chunk_calendar_days: int | None = None,
+    ) -> WorkflowResult:
+        started = utc_now()
+        run_id = _campaign_operation_run_id("init-daily-campaign", started)
+        chunk_days = (
+            self.settings.daily_backfill_chunk_calendar_days
+            if chunk_calendar_days is None
+            else chunk_calendar_days
+        )
+        chunks = daily_date_chunks(start, end, chunk_calendar_days=chunk_days)
+        universe_source = self.storage.read_normalized_dataset_with_provenance("universe")
+        parameters: dict[str, object] = {
+            "campaign_id": campaign_id,
+            "snapshot_date": snapshot_date.isoformat() if snapshot_date else None,
+            "chunk_calendar_days": chunk_days,
+            "stale_after_calendar_days": self.settings.daily_coverage_stale_after_days,
+            "expected_unit_provenance": VNSTOCK_KBS_DAILY_UNIT_PROVENANCE.model_dump(
+                mode="json"
+            ),
+            "price_adjustment_semantics": "unknown_provider_adjustment_flag",
+        }
+        if universe_source is None:
+            return self._failed_local_result(
+                run_id=run_id,
+                command="data init-daily-campaign",
+                started=started,
+                validation_result=ValidationResult(
+                    dataset_name="daily_campaign",
+                    severity=ValidationSeverity.ERROR,
+                    check_name="normalized_universe_available",
+                    message="No local normalized universe snapshots were found.",
+                    blocks_output=True,
+                ),
+                parameters=parameters,
+                contract_versions={"daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION},
+            )
+
+        universe_all, _all_universe_paths = universe_source
+        selected, selected_timestamp = _select_universe_snapshot(
+            universe_all,
+            snapshot_date=snapshot_date,
+        )
+        selected_paths = _input_paths(selected)
+        selected_without_paths = selected.drop(columns=["__input_path"], errors="ignore")
+        prepared = prepare_research_universe(selected_without_paths, exchange="HOSE")
+        validation_results = validate_research_universe(
+            prepared,
+            expected_input_row_count=len(selected_without_paths),
+        )
+        symbols = sorted(
+            prepared.loc[
+                (prepared["candidate_status"] == "included_candidate")
+                & prepared["symbol"].notna(),
+                "symbol",
+            ]
+            .astype(str)
+            .unique()
+            .tolist()
+        )
+        if not symbols:
+            validation_results.append(
+                ValidationResult(
+                    dataset_name="daily_campaign",
+                    severity=ValidationSeverity.ERROR,
+                    check_name="usable_hose_stock_universe_available",
+                    message="The selected snapshot has no included HOSE stock candidates.",
+                    blocks_output=True,
+                )
+            )
+        else:
+            validation_results.append(
+                ValidationResult(
+                    dataset_name="daily_campaign",
+                    severity=ValidationSeverity.INFO,
+                    check_name="campaign_task_plan",
+                    message=(
+                        f"Planned {len(symbols) * len(chunks)} immutable symbol/date tasks "
+                        f"for {len(symbols)} current-snapshot candidates."
+                    ),
+                )
+            )
+
+        output_paths: list[Path] = []
+        plan: DailyCampaignPlan | None = None
+        if not has_blocking_errors(validation_results):
+            plan = DailyCampaignPlan(
+                campaign_contract_version=DAILY_CAMPAIGN_CONTRACT_VERSION,
+                campaign_id=campaign_id,
+                provider="vnstock",
+                data_backend=VNSTOCK_KBS_DATA_BACKEND,
+                exchange="HOSE",
+                source_resolution="1D",
+                normalized_daily_contract_version=NORMALIZED_DAILY_CONTRACT_VERSION,
+                price_adjustment_semantics="unknown_provider_adjustment_flag",
+                expected_adjusted_flag=None,
+                universe_snapshot_date=selected_timestamp.date(),
+                universe_snapshot_observed_at_utc=selected_timestamp.to_pydatetime(),
+                universe_run_ids=sorted({path.stem for path in selected_paths}),
+                universe_input_paths=[str(path) for path in selected_paths],
+                start_date=start,
+                end_date=end,
+                chunk_calendar_days=chunk_days,
+                stale_after_calendar_days=self.settings.daily_coverage_stale_after_days,
+                symbols=symbols,
+                expected_unit_provenance=VNSTOCK_KBS_DAILY_UNIT_PROVENANCE,
+                tasks=build_campaign_tasks(symbols=symbols, chunks=chunks),
+            )
+            manager = DailyCampaignManager(self.storage)
+            with manager.lock(campaign_id):
+                output_paths.append(manager.write_plan(plan))
+                manager.assess(plan)
+            output_paths.append(self.storage.daily_campaign_state_path(campaign_id))
+
+        status = "failed" if has_blocking_errors(validation_results) else "success"
+        manifest = build_manifest(
+            run_id=run_id,
+            command="data init-daily-campaign",
+            started_at_utc=started,
+            finished_at_utc=utc_now(),
+            status=status,
+            symbols=symbols,
+            exchange="HOSE",
+            start_date=start.isoformat(),
+            end_date=end.isoformat(),
+            resolution="1D",
+            row_counts={
+                "selected_universe_rows": len(selected_without_paths),
+                "campaign_symbols": len(symbols),
+                "campaign_tasks": len(plan.tasks) if plan is not None else 0,
+            },
+            input_paths=selected_paths,
+            output_paths=output_paths,
+            parameters={
+                **parameters,
+                "selected_snapshot_observed_at_utc": selected_timestamp.isoformat(),
+            },
+            data_contract_versions={
+                "daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION,
+                "normalized_daily": NORMALIZED_DAILY_CONTRACT_VERSION,
+            },
+            notes=[
+                "The campaign universe is one observed current snapshot, not historical "
+                "membership.",
+                "Included symbols are provider-reported stock candidates, not verified "
+                "tradability.",
+                *CAMPAIGN_KNOWN_RISKS,
+            ],
+            validation_results=validation_results,
+        )
+        manifest_path = write_manifest(manifest, self.storage.manifest_root)
+        return WorkflowResult(
+            manifest=manifest,
+            validation_results=validation_results,
+            manifest_path=str(manifest_path),
+        )
+
+    def adopt_daily_run(self, *, campaign_id: str, daily_run_id: str) -> WorkflowResult:
+        started = utc_now()
+        run_id = _campaign_operation_run_id("adopt-daily-run", started)
+        manager = DailyCampaignManager(self.storage)
+        plan = manager.load_plan(campaign_id)
+        validation_results: list[ValidationResult] = []
+        receipt_paths: list[Path] = []
+        with manager.lock(campaign_id):
+            try:
+                receipt_paths, state = manager.adopt_run(plan, run_id=daily_run_id)
+            except CampaignCompatibilityError as exc:
+                receipt_paths = [
+                    path
+                    for path in self.storage.daily_campaign_receipt_paths(campaign_id)
+                    if path.name == f"{daily_run_id}.json"
+                ]
+                validation_results.append(
+                    ValidationResult(
+                        dataset_name="daily_campaign",
+                        severity=ValidationSeverity.ERROR,
+                        check_name="adopted_run_compatible",
+                        message=str(exc),
+                        blocks_output=True,
+                    )
+                )
+                state = manager.assess(plan)
+        if not validation_results:
+            validation_results.append(
+                ValidationResult(
+                    dataset_name="daily_campaign",
+                    severity=ValidationSeverity.INFO,
+                    check_name="adopted_run_compatible",
+                    message=f"Recorded {len(receipt_paths)} compatible task receipts.",
+                )
+            )
+        output_paths = [*receipt_paths, self.storage.daily_campaign_state_path(campaign_id)]
+        source_paths = self.storage.normalized_dataset_paths("daily", run_id=daily_run_id)
+        status = "failed" if has_blocking_errors(validation_results) else "success"
+        manifest = build_manifest(
+            run_id=run_id,
+            command="data adopt-daily-run",
+            started_at_utc=started,
+            finished_at_utc=utc_now(),
+            status=status,
+            symbols=plan.symbols,
+            exchange=plan.exchange,
+            start_date=plan.start_date.isoformat(),
+            end_date=plan.end_date.isoformat(),
+            resolution=plan.source_resolution,
+            row_counts={
+                "receipts_recorded": len(receipt_paths),
+                "complete_tasks": state.task_counts.get("complete", 0),
+                "empty_tasks": state.task_counts.get("empty", 0),
+                "unresolved_tasks": sum(
+                    state.task_counts.get(status_name.value, 0)
+                    for status_name in CampaignTaskStatus
+                    if status_name
+                    not in {CampaignTaskStatus.COMPLETE, CampaignTaskStatus.EMPTY}
+                ),
+            },
+            input_paths=[
+                self.storage.daily_campaign_plan_path(campaign_id),
+                self.storage.manifest_path(daily_run_id),
+                *source_paths,
+            ],
+            output_paths=output_paths,
+            parameters={"campaign_id": campaign_id, "daily_run_id": daily_run_id},
+            data_contract_versions={"daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION},
+            validation_results=validation_results,
+        )
+        manifest_path = write_manifest(manifest, self.storage.manifest_root)
+        return WorkflowResult(
+            manifest=manifest,
+            validation_results=validation_results,
+            manifest_path=str(manifest_path),
+        )
+
+    def run_daily_campaign(
+        self,
+        *,
+        campaign_id: str,
+        max_tasks: int | None = None,
+        retry_failed: bool = False,
+        retry_stale: bool = False,
+        retry_incompatible: bool = False,
+        dry_run: bool = False,
+    ) -> WorkflowResult:
+        started = utc_now()
+        run_id = _campaign_operation_run_id("run-daily-campaign", started)
+        task_limit = (
+            self.settings.campaign_max_tasks_per_run if max_tasks is None else max_tasks
+        )
+        if task_limit < 1:
+            raise ValueError("max_tasks must be positive.")
+        if task_limit > self.settings.campaign_max_tasks_per_run:
+            raise SafetyLimitError(
+                f"Requested {task_limit} tasks, above CAMPAIGN_MAX_TASKS_PER_RUN="
+                f"{self.settings.campaign_max_tasks_per_run}."
+            )
+        attempt_budget = task_limit * self.settings.max_retry_attempts
+        if attempt_budget > self.settings.max_live_provider_calls:
+            raise SafetyLimitError(
+                f"Worst-case retry budget is {attempt_budget} provider attempts, above "
+                f"MAX_LIVE_PROVIDER_CALLS={self.settings.max_live_provider_calls}."
+            )
+
+        manager = DailyCampaignManager(self.storage)
+        plan = manager.load_plan(campaign_id)
+        with manager.lock(campaign_id):
+            initial_state = manager.assess(plan)
+            selected = manager.select_tasks(
+                initial_state,
+                max_tasks=task_limit,
+                retry_failed=retry_failed,
+                retry_stale=retry_stale,
+                retry_incompatible=retry_incompatible,
+            )
+            parameters: dict[str, object] = {
+                "campaign_id": campaign_id,
+                "max_tasks": task_limit,
+                "max_retry_attempts": self.settings.max_retry_attempts,
+                "worst_case_provider_attempt_budget": attempt_budget,
+                "provider_sleep_seconds": self.settings.provider_sleep_seconds,
+                "retry_failed": retry_failed,
+                "retry_stale": retry_stale,
+                "retry_incompatible": retry_incompatible,
+                "selected_task_ids": [item.task_id for item in selected],
+            }
+            if dry_run:
+                return self._dry_run_result(
+                    run_id=run_id,
+                    command="data run-daily-campaign",
+                    started=started,
+                    symbols=sorted({item.symbol for item in selected}),
+                    exchange=plan.exchange,
+                    start_date=plan.start_date.isoformat(),
+                    end_date=plan.end_date.isoformat(),
+                    resolution=plan.source_resolution,
+                    parameters=parameters,
+                )
+
+            provider = self._require_provider()
+            provider_call_count_at_start = provider.call_count
+            receipt_paths: list[Path] = []
+            child_results: list[WorkflowResult] = []
+            for task in selected:
+                child = self.backfill_daily(
+                    symbols=[task.symbol],
+                    start=task.start_date,
+                    end=task.end_date,
+                    chunk_calendar_days=(task.end_date - task.start_date).days + 1,
+                    campaign_id=campaign_id,
+                    campaign_task_id=task.task_id,
+                    allow_empty_success=True,
+                )
+                child_results.append(child)
+                receipt = DailyCampaignReceipt(
+                    campaign_contract_version=plan.campaign_contract_version,
+                    campaign_id=campaign_id,
+                    task_id=task.task_id,
+                    source_run_id=child.manifest.run_id,
+                    origin=CampaignReceiptOrigin.CAMPAIGN_RUN,
+                    recorded_at_utc=child.manifest.finished_at_utc,
+                )
+                receipt_paths.append(manager.record_receipt(receipt))
+                if child.manifest.status != "success":
+                    break
+            final_state = manager.assess(plan)
+
+        failed_children = [
+            result for result in child_results if result.manifest.status != "success"
+        ]
+        validation_results = [
+            ValidationResult(
+                dataset_name="daily_campaign",
+                severity=(
+                    ValidationSeverity.ERROR
+                    if failed_children
+                    else ValidationSeverity.INFO
+                ),
+                check_name="campaign_batch_execution",
+                message=(
+                    "A child ingestion failed; later selected tasks were not attempted."
+                    if failed_children
+                    else f"Completed {len(child_results)} selected campaign tasks."
+                ),
+                blocks_output=bool(failed_children),
+            )
+        ]
+        status = "failed" if failed_children else "success"
+        child_manifest_paths = [
+            Path(result.manifest_path)
+            for result in child_results
+            if result.manifest_path is not None
+        ]
+        manifest = build_manifest(
+            run_id=run_id,
+            command="data run-daily-campaign",
+            started_at_utc=started,
+            finished_at_utc=utc_now(),
+            status=status,
+            symbols=sorted({item.symbol for item in selected}),
+            exchange=plan.exchange,
+            start_date=plan.start_date.isoformat(),
+            end_date=plan.end_date.isoformat(),
+            resolution=plan.source_resolution,
+            row_counts={
+                "tasks_selected": len(selected),
+                "tasks_attempted": len(child_results),
+                "tasks_succeeded": len(child_results) - len(failed_children),
+                "tasks_failed": len(failed_children),
+                "campaign_complete_tasks": final_state.task_counts.get("complete", 0),
+                "campaign_empty_tasks": final_state.task_counts.get("empty", 0),
+                "campaign_pending_tasks": final_state.task_counts.get("pending", 0),
+                "campaign_failed_tasks": final_state.task_counts.get("failed", 0),
+                "campaign_stale_tasks": final_state.task_counts.get("stale", 0),
+                "campaign_incompatible_tasks": final_state.task_counts.get("incompatible", 0),
+            },
+            input_paths=[self.storage.daily_campaign_plan_path(campaign_id)],
+            output_paths=[
+                *child_manifest_paths,
+                *receipt_paths,
+                self.storage.daily_campaign_state_path(campaign_id),
+            ],
+            parameters={
+                **parameters,
+                "child_run_ids": [result.manifest.run_id for result in child_results],
+            },
+            data_contract_versions={
+                "daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION,
+                "normalized_daily": NORMALIZED_DAILY_CONTRACT_VERSION,
+            },
+            notes=[
+                "Completed and provider-empty tasks are skipped on resume.",
+                "Failed, stale, and incompatible tasks require explicit retry flags.",
+            ],
+            validation_results=validation_results,
+            provider_call_count=provider.call_count - provider_call_count_at_start,
+        )
+        manifest_path = write_manifest(manifest, self.storage.manifest_root)
+        return WorkflowResult(
+            manifest=manifest,
+            validation_results=validation_results,
+            manifest_path=str(manifest_path),
+        )
+
+    def audit_daily_campaign(
+        self,
+        *,
+        campaign_id: str,
+        config: DailyCoverageConfig,
+    ) -> WorkflowResult:
+        started = utc_now()
+        run_id = _campaign_operation_run_id("audit-daily-campaign", started)
+        manager = DailyCampaignManager(self.storage)
+        plan = manager.load_plan(campaign_id)
+        report_root = self.settings.report_dir / "data_quality" / "campaigns" / campaign_id
+        with manager.lock(campaign_id):
+            state, coverage, summary, report_paths = manager.audit(
+                plan,
+                coverage_config=config,
+                json_path=report_root / f"{run_id}.json",
+                markdown_path=report_root / f"{run_id}.md",
+            )
+            statuses_by_symbol: dict[str, list[CampaignTaskStatus]] = {
+                symbol: [] for symbol in plan.symbols
+            }
+            for task in state.tasks:
+                statuses_by_symbol[task.symbol].append(task.status)
+            complete_symbols = {
+                symbol
+                for symbol, statuses in statuses_by_symbol.items()
+                if statuses
+                and all(
+                    status in {CampaignTaskStatus.COMPLETE, CampaignTaskStatus.EMPTY}
+                    for status in statuses
+                )
+            }
+            source_rows, source_paths = manager.source_rows(
+                plan,
+                state,
+                symbols=complete_symbols,
+            )
+            virtual_source_run_ids = sorted(
+                source_rows["source_run_id"].dropna().astype(str).unique().tolist()
+            ) if not source_rows.empty else []
+        validation_results = validate_daily_coverage(
+            coverage,
+            expected_symbol_count=len(plan.symbols),
+        )
+        output_paths = list(report_paths)
+        if not has_blocking_errors(validation_results):
+            output_paths.insert(
+                0,
+                self.storage.write_parquet(
+                    coverage,
+                    self.storage.daily_campaign_coverage_path(campaign_id, run_id),
+                ),
+            )
+        unit_policy = resolve_daily_unit_policy(
+            source_rows.drop(
+                columns=["source_run_id", "source_normalized_path", "__input_path"],
+                errors="ignore",
+            )
+        )
+        status = "failed" if has_blocking_errors(validation_results) else "success"
+        manifest = build_manifest(
+            run_id=run_id,
+            command="data audit-daily-campaign",
+            started_at_utc=started,
+            finished_at_utc=utc_now(),
+            status=status,
+            symbols=plan.symbols,
+            exchange=plan.exchange,
+            start_date=plan.start_date.isoformat(),
+            end_date=plan.end_date.isoformat(),
+            resolution=plan.source_resolution,
+            row_counts={
+                "campaign_symbols": len(plan.symbols),
+                "campaign_tasks": len(plan.tasks),
+                "complete_symbols": int(summary["complete_symbol_count"]),
+                "virtual_source_rows": int(summary["virtual_source_row_count"]),
+                "duplicate_symbol_dates": int(summary["duplicate_symbol_date_count"]),
+                "raw_ohlcv_usable_symbols": int(
+                    summary["coverage"]["raw_ohlcv_usable_symbol_count"]
+                ),
+                "vnd_liquidity_usable_symbols": int(
+                    summary["coverage"]["vnd_liquidity_usable_symbol_count"]
+                ),
+            },
+            input_paths=sorted(
+                {
+                    self.storage.daily_campaign_plan_path(campaign_id),
+                    self.storage.daily_campaign_state_path(campaign_id),
+                    *self.storage.daily_campaign_receipt_paths(campaign_id),
+                    *source_paths,
+                    *[
+                        self.storage.manifest_path(source_run_id)
+                        for source_run_id in virtual_source_run_ids
+                    ],
+                }
+            ),
+            output_paths=output_paths,
+            parameters={
+                "campaign_id": campaign_id,
+                "coverage_config": config.model_dump(mode="json"),
+                "task_counts": state.task_counts,
+                "symbol_counts": state.symbol_counts,
+                "assembly_ready": state.assembly_ready,
+                "canonical_candidate": state.canonical_candidate,
+            },
+            unit_provenance=unit_policy,
+            data_contract_versions={
+                "daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION,
+                "daily_campaign_audit": DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION,
+                "daily_coverage": DAILY_COVERAGE_CONTRACT_VERSION,
+            },
+            notes=CAMPAIGN_KNOWN_RISKS,
+            validation_results=validation_results,
+        )
+        manifest_path = write_manifest(manifest, self.storage.manifest_root)
+        return WorkflowResult(
+            manifest=manifest,
+            validation_results=validation_results,
+            manifest_path=str(manifest_path),
+        )
+
+    def assemble_daily_campaign(self, *, campaign_id: str) -> WorkflowResult:
+        started = utc_now()
+        run_id = _campaign_operation_run_id("assemble-daily-campaign", started)
+        manager = DailyCampaignManager(self.storage)
+        plan = manager.load_plan(campaign_id)
+        try:
+            with manager.lock(campaign_id):
+                (
+                    dataset_id,
+                    assembled,
+                    assembled_paths,
+                    source_paths,
+                    validation_results,
+                    state,
+                ) = manager.assemble(plan)
+        except (CampaignIncompleteError, CampaignCompatibilityError) as exc:
+            return self._failed_local_result(
+                run_id=run_id,
+                command="data assemble-daily-campaign",
+                started=started,
+                validation_result=ValidationResult(
+                    dataset_name="assembled_daily",
+                    severity=ValidationSeverity.ERROR,
+                    check_name="campaign_ready_for_assembly",
+                    message=str(exc),
+                    blocks_output=True,
+                ),
+                parameters={"campaign_id": campaign_id},
+                contract_versions={
+                    "daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION,
+                    "assembled_daily": ASSEMBLED_DAILY_CONTRACT_VERSION,
+                },
+            )
+        unit_policy = resolve_daily_unit_policy(assembled)
+        input_paths = sorted(
+            {
+                self.storage.daily_campaign_plan_path(campaign_id),
+                *self.storage.daily_campaign_receipt_paths(campaign_id),
+                *source_paths,
+                *[
+                    self.storage.manifest_path(source_run_id)
+                    for source_run_id in state.source_run_ids
+                ],
+            }
+        )
+        output_paths = [
+            *assembled_paths,
+            self.storage.daily_campaign_state_path(campaign_id),
+        ]
+        manifest = build_manifest(
+            run_id=run_id,
+            command="data assemble-daily-campaign",
+            started_at_utc=started,
+            finished_at_utc=utc_now(),
+            status="success",
+            symbols=plan.symbols,
+            exchange=plan.exchange,
+            start_date=plan.start_date.isoformat(),
+            end_date=plan.end_date.isoformat(),
+            resolution=plan.source_resolution,
+            row_counts={
+                "assembled_rows": len(assembled),
+                "assembled_symbols_with_rows": int(assembled["symbol"].nunique()),
+                "campaign_symbols": len(plan.symbols),
+                "source_runs": len(state.source_run_ids),
+            },
+            input_paths=input_paths,
+            output_paths=output_paths,
+            parameters={
+                "campaign_id": campaign_id,
+                "assembled_dataset_id": dataset_id,
+                "canonical_candidate": state.canonical_candidate,
+            },
+            unit_provenance=unit_policy,
+            data_contract_versions={
+                "daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION,
+                "normalized_daily": NORMALIZED_DAILY_CONTRACT_VERSION,
+                "assembled_daily": ASSEMBLED_DAILY_CONTRACT_VERSION,
+            },
+            notes=[
+                "Assembly preserves observed rows only and retains source lineage per row.",
+                "Canonical candidate does not verify historical membership or price adjustment.",
+                *CAMPAIGN_KNOWN_RISKS,
+            ],
+            validation_results=validation_results,
+        )
+        manifest_path = write_manifest(manifest, self.storage.manifest_root)
+        return WorkflowResult(
+            manifest=manifest,
+            validation_results=validation_results,
+            manifest_path=str(manifest_path),
+        )
+
     def validate_existing_data(self, *, write_reports: bool = True) -> WorkflowResult:
         started = utc_now()
         run_id = create_run_id("validate", started)
@@ -1189,6 +1864,10 @@ def _clean_symbols(symbols: list[str]) -> list[str]:
     if not cleaned:
         raise ValueError("At least one symbol is required.")
     return cleaned
+
+
+def _campaign_operation_run_id(command: str, started: datetime) -> str:
+    return f"{create_run_id(command, started)}-{started.strftime('%f')}"
 
 
 def daily_date_chunks(

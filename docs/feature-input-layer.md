@@ -17,6 +17,8 @@ The layer extends the existing data architecture instead of creating a second pi
 - `validators.py` enforces contract invariants and returns existing structured validation models.
 - `workflows.py`, `storage.py`, and `manifests.py` provide local I/O and provenance through the
   same mechanisms as Phase 1.
+- `campaigns.py` reconstructs immutable symbol/chunk campaign state, audits compatible sources,
+  and assembles `assembled-daily-v1` only after every task is resolved.
 
 The canonical daily feature input is long-form, keyed and ordered by `symbol,date`. Long form
 preserves sparse observations without inventing bars and fits the existing symbol-partitioned
@@ -215,6 +217,8 @@ data/feature_inputs/vnstock/daily_panel/start_date=YYYY-MM-DD/end_date=YYYY-MM-D
 data/feature_inputs/vnstock/liquidity/reference_date=YYYY-MM-DD/*.parquet
 data/feature_inputs/vnstock/availability/start_date=YYYY-MM-DD/end_date=YYYY-MM-DD/*.parquet
 data/feature_inputs/vnstock/coverage/snapshot_date=YYYY-MM-DD/start_date=YYYY-MM-DD/end_date=YYYY-MM-DD/*.parquet
+data/campaigns/vnstock/daily/campaign_id=<campaign-id>/...
+data/assembled/vnstock/daily/campaign_id=<campaign-id>/dataset_id=<dataset-id>/...
 reports/feature_inputs/*-availability.json
 reports/feature_inputs/*-availability.md
 reports/data_quality/*-daily-coverage.json
@@ -238,3 +242,6 @@ to zero.
 - Legacy normalized daily files lack source-specific unit provenance.
 - Legacy intraday files predate the Phase 2 raw timestamp/awareness fields and remain explicitly
   unresolved rather than being relocalized.
+
+The full-universe campaign, resume model, campaign audit, and assembled daily contract are
+documented in [universe-ingestion-campaign.md](universe-ingestion-campaign.md).

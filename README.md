@@ -7,7 +7,8 @@
 Phase 0 bootstrapped the repository and implemented a reproducible `vnstock` capability audit.
 
 Phase 1 adds the provider data foundation. Phase 2 adds a local-only feature-input layer, and
-Phase 2.2 hardens daily re-ingestion and coverage auditing:
+Phase 2.2 hardens daily re-ingestion and coverage auditing. Phase 2.3 adds a resumable,
+universe-scale ingestion campaign and safe dataset assembly:
 
 - small-universe daily OHLCV backfills;
 - small-universe intraday fetches;
@@ -22,6 +23,10 @@ Phase 2.2 hardens daily re-ingestion and coverage auditing:
 - per-symbol availability diagnostics;
 - rate-aware, date-chunked daily re-ingestion with all-or-nothing normalized publication;
 - exact-run HOSE coverage, quality, staleness, and unit-provenance audits;
+- immutable full-universe campaign plans and per-task attempt receipts;
+- provider-limited batches with interruption recovery and explicit retry controls;
+- campaign-level virtual coverage and compatibility audits;
+- deterministic, atomic, versioned assembly with row-level source lineage;
 - explicit market-time, adjustment, unit, and point-in-time uncertainty.
 
 No strategy, signal, label, backtesting, machine-learning, live trading, portfolio construction,
@@ -93,12 +98,19 @@ python3 -m hose_quant.cli data prepare-universe --snapshot-date 2026-07-04
 python3 -m hose_quant.cli data prepare-universe --snapshot-date 2026-07-04 --with-liquidity --liquidity-reference-date 2026-07-02
 python3 -m hose_quant.cli data build-daily-panel --symbols FPT,HPG,VCB --start 2026-05-04 --end 2026-07-02
 python3 -m hose_quant.cli data audit-daily-coverage --daily-run-id RUN_ID --start 2020-01-01 --end 2026-07-03 --snapshot-date 2026-07-04
+python3 -m hose_quant.cli data init-daily-campaign --campaign-id hose-daily-20260805 --snapshot-date 2026-08-05 --start 2020-01-01 --end 2026-08-04 --chunk-calendar-days 730
+python3 -m hose_quant.cli data adopt-daily-run --campaign-id hose-daily-20260805 --daily-run-id RUN_ID
+python3 -m hose_quant.cli data run-daily-campaign --campaign-id hose-daily-20260805 --max-tasks 20 --dry-run
+python3 -m hose_quant.cli data audit-daily-campaign --campaign-id hose-daily-20260805
+python3 -m hose_quant.cli data assemble-daily-campaign --campaign-id hose-daily-20260805
 ```
 
 See [docs/feature-input-layer.md](docs/feature-input-layer.md) for contracts, unit provenance,
 point-in-time limitations, and screening options. See
 [docs/reingestion-coverage-audit.md](docs/reingestion-coverage-audit.md) for the Phase 2.2
-re-ingestion and audit runbook.
+re-ingestion and audit runbook. See
+[docs/universe-ingestion-campaign.md](docs/universe-ingestion-campaign.md) for campaign resume,
+adoption, audit, compatibility, and assembly rules.
 
 ## Reports
 
@@ -107,6 +119,7 @@ re-ingestion and audit runbook.
 - Data-quality reports: `reports/data_quality/latest.json` and `reports/data_quality/latest.md` when `data validate` is run
 - Feature-input diagnostics: `reports/feature_inputs/` when a daily panel is built
 - Daily coverage audits: `reports/data_quality/*-daily-coverage.{json,md}`
+- Campaign audits: `reports/data_quality/campaigns/<campaign-id>/`
 
 Reports must not contain credentials, raw auth headers, or generated market data.
 
@@ -117,6 +130,8 @@ Generated market data is intentionally ignored by Git:
 - raw provider data: `data/raw/vnstock/`
 - normalized Parquet: `data/normalized/vnstock/`
 - feature-input Parquet: `data/feature_inputs/vnstock/`
+- campaign plans, state, receipts, and audits: `data/campaigns/vnstock/daily/`
+- assembled versioned daily datasets: `data/assembled/vnstock/daily/`
 - manifests: `data/manifests/`
 - caches: `data/cache/`
 

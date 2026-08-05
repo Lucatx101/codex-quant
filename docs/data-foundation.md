@@ -13,6 +13,8 @@ data/
 ├── normalized/vnstock/daily/symbol=FPT/*.parquet
 ├── normalized/vnstock/intraday/resolution=1m/symbol=FPT/trading_date=YYYY-MM-DD/*.parquet
 ├── normalized/vnstock/quotes/snapshot_date=YYYY-MM-DD/*.parquet
+├── campaigns/vnstock/daily/campaign_id=<campaign-id>/...
+├── assembled/vnstock/daily/campaign_id=<campaign-id>/dataset_id=<dataset-id>/...
 ├── cache/
 └── manifests/<run_id>.json
 ```
@@ -88,3 +90,8 @@ remain unchanged and explicitly ineligible for VND liquidity calculations.
 
 The Phase 2.2 exact-run re-ingestion and coverage workflow is documented in
 [reingestion-coverage-audit.md](reingestion-coverage-audit.md).
+
+Phase 2.3 keeps each bounded daily task as an immutable Phase 1-style raw/normalized run, then
+adds reconstructible campaign receipts, compatibility assessment, campaign coverage, and atomic
+versioned assembly. The campaign never rewrites old source runs or silently combines incompatible
+contracts. See [universe-ingestion-campaign.md](universe-ingestion-campaign.md).
