@@ -25,6 +25,7 @@ DAILY_CAMPAIGN_READINESS_POLICY_VERSION: Literal[
 ASSEMBLED_DAILY_CONTRACT_VERSION = "assembled-daily-v1"
 DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION = "daily-campaign-audit-v2"
 DAILY_CAMPAIGN_FORENSIC_AUDIT_CONTRACT_VERSION = "daily-campaign-forensic-audit-v1"
+VCI_SOURCE_QUALIFICATION_CONTRACT_VERSION = "vci-source-qualification-v1"
 
 
 class DataContract(BaseModel):

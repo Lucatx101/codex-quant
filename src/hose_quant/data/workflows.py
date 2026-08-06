@@ -26,6 +26,7 @@ from hose_quant.data.contracts import (
     LIQUIDITY_CONTRACT_VERSION,
     NORMALIZED_DAILY_CONTRACT_VERSION,
     UNIVERSE_CONTRACT_VERSION,
+    VCI_SOURCE_QUALIFICATION_CONTRACT_VERSION,
 )
 from hose_quant.data.coverage import (
     KNOWN_COVERAGE_RISKS,
@@ -69,6 +70,11 @@ from hose_quant.data.normalizers import (
     normalize_intraday_bars,
     normalize_quote_snapshot,
     normalize_universe_snapshot,
+)
+from hose_quant.data.source_qualification import (
+    VCI_QUALIFICATION_PROBES,
+    execute_vci_source_qualification,
+    qualification_plan,
 )
 from hose_quant.data.storage import DataStorage
 from hose_quant.data.unit_provenance import (
@@ -1973,6 +1979,135 @@ class DataWorkflow:
             validation_results=validation_results,
             manifest_path=str(manifest_path),
         )
+
+    def qualify_vci_source(
+        self,
+        *,
+        campaign_id: str,
+        live: bool = False,
+    ) -> WorkflowResult:
+        started = utc_now()
+        run_id = _campaign_operation_run_id("qualify-vci-source", started)
+        projected_requests = len(VCI_QUALIFICATION_PROBES)
+        projected_wrapper_attempts = projected_requests * self.settings.max_retry_attempts
+        self._enforce_provider_call_limit(
+            projected_wrapper_attempts,
+            allow_large_universe=False,
+        )
+        manager = DailyCampaignManager(self.storage)
+        with manager.lock(campaign_id):
+            plan = manager.load_plan(campaign_id)
+            plan_path = self.storage.daily_campaign_plan_path(campaign_id)
+            state_path = self.storage.daily_campaign_state_path(campaign_id)
+            if not state_path.exists():
+                raise ValueError(f"Campaign state not found: {campaign_id}.")
+            plan_bytes_before = plan_path.read_bytes()
+            state_bytes_before = state_path.read_bytes()
+            state = DailyCampaignState.model_validate_json(state_bytes_before)
+            if state.campaign_id != plan.campaign_id:
+                raise ValueError("Campaign plan and state IDs do not match.")
+
+            forensic_root = (
+                self.settings.report_dir / "data_quality" / "campaigns" / campaign_id / "forensics"
+            )
+            forensic_reports = sorted(forensic_root.glob("*.json"))
+            forensic_report_path = forensic_reports[-1] if forensic_reports else None
+            parameters: dict[str, object] = {
+                "campaign_id": campaign_id,
+                "source": "vci",
+                "qualification_contract_version": (VCI_SOURCE_QUALIFICATION_CONTRACT_VERSION),
+                "live_requested": live,
+                "probe_count": projected_requests,
+                "projected_wrapper_attempts": projected_wrapper_attempts,
+                "provider_call_limit": self.settings.max_live_provider_calls,
+                "max_retry_attempts": self.settings.max_retry_attempts,
+                "provider_sleep_seconds": self.settings.provider_sleep_seconds,
+                "execution_mode": "sequential",
+                "probe_plan": qualification_plan(),
+                "campaign_mutation_permitted": False,
+                "canonical_publication_permitted": False,
+            }
+            if not live:
+                return self._dry_run_result(
+                    run_id=run_id,
+                    command="data qualify-vci-source",
+                    started=started,
+                    symbols=sorted({probe.symbol for probe in VCI_QUALIFICATION_PROBES}),
+                    exchange="HOSE",
+                    start_date=min(probe.start for probe in VCI_QUALIFICATION_PROBES).isoformat(),
+                    end_date=max(probe.end for probe in VCI_QUALIFICATION_PROBES).isoformat(),
+                    resolution="1D",
+                    parameters=parameters,
+                )
+
+            provider = self._require_provider()
+            artifacts = execute_vci_source_qualification(
+                provider=provider,
+                storage=self.storage,
+                report_root=(
+                    self.settings.report_dir / "data_quality" / "source_qualification" / "vci"
+                ),
+                plan=plan,
+                state=state,
+                campaign_plan_path=plan_path,
+                campaign_state_path=state_path,
+                forensic_report_path=forensic_report_path,
+                parent_run_id=run_id,
+                started_at_utc=started,
+                sanitize_provider_error=self._sanitize_provider_error,
+                max_retry_attempts=self.settings.max_retry_attempts,
+                provider_sleep_seconds=self.settings.provider_sleep_seconds,
+            )
+            if plan_path.read_bytes() != plan_bytes_before:
+                raise ValueError("Campaign plan changed during VCI qualification.")
+            if state_path.read_bytes() != state_bytes_before:
+                raise ValueError("Campaign state changed during VCI qualification.")
+
+        parameters.update(
+            {
+                "final_verdict": artifacts.payload["final_verdict"],
+                "verdict_scope": artifacts.payload["verdict_scope"],
+                "scoped_verdict": artifacts.payload["scoped_verdict"],
+                "qualification_criteria": artifacts.payload["qualification_criteria"],
+                "live_probe_count_executed": artifacts.payload["live_probe_count_executed"],
+                "phase_2_4_2b_recommendation": artifacts.payload["phase_2_4_2b_recommendation"],
+                "campaign_plan_unchanged": True,
+                "campaign_state_unchanged": True,
+            }
+        )
+        manifest = build_manifest(
+            run_id=run_id,
+            command="data qualify-vci-source",
+            started_at_utc=started,
+            finished_at_utc=utc_now(),
+            status="success",
+            symbols=sorted({probe.symbol for probe in VCI_QUALIFICATION_PROBES}),
+            exchange="HOSE",
+            start_date=min(probe.start for probe in VCI_QUALIFICATION_PROBES).isoformat(),
+            end_date=max(probe.end for probe in VCI_QUALIFICATION_PROBES).isoformat(),
+            resolution="1D",
+            row_counts={
+                "probes_planned": projected_requests,
+                "probes_executed": int(artifacts.payload["live_probe_count_executed"]),
+                "raw": artifacts.raw_row_count,
+                "normalized_published": 0,
+            },
+            input_paths=artifacts.input_paths,
+            output_paths=artifacts.output_paths,
+            parameters=parameters,
+            unit_provenance=artifacts.unit_policy,
+            data_contract_versions={
+                "vci_source_qualification": VCI_SOURCE_QUALIFICATION_CONTRACT_VERSION,
+            },
+            notes=[
+                "Qualification evidence only; no VCI normalized dataset was published.",
+                "No KBS campaign task was retried and no source rows were mixed.",
+                "Unknown adjustment semantics remain null and block an unconstrained verdict.",
+            ],
+            provider_call_count=artifacts.provider_call_count,
+        )
+        manifest_path = write_manifest(manifest, self.storage.manifest_root)
+        return WorkflowResult(manifest=manifest, manifest_path=str(manifest_path))
 
     def _dry_run_result(
         self,

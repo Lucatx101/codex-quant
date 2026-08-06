@@ -9,7 +9,9 @@ Phase 0 bootstrapped the repository and implemented a reproducible `vnstock` cap
 Phase 1 adds the provider data foundation. Phase 2 adds a local-only feature-input layer, and
 Phase 2.2 hardens daily re-ingestion and coverage auditing. Phase 2.3 adds a resumable,
 universe-scale ingestion campaign and safe dataset assembly. Phase 2.3.1 separates structural
-assembly from explicit research-readiness acceptance:
+assembly from explicit research-readiness acceptance. Phase 2.4.2A adds a bounded VCI daily-source
+qualification workflow and records a `rejected_for_canonical_daily_ohlcv` verdict without
+changing the KBS campaign:
 
 - small-universe daily OHLCV backfills;
 - small-universe intraday fetches;
@@ -28,6 +30,7 @@ assembly from explicit research-readiness acceptance:
 - provider-limited batches with interruption recovery and explicit retry controls;
 - campaign-level virtual coverage and compatibility audits;
 - deterministic offline forensic classification of failed and stale campaign tasks;
+- bounded, manifested VCI source probes with mechanical qualification criteria;
 - deterministic, atomic, versioned assembly with row-level source lineage;
 - versioned campaign-level coverage-quality policy and readiness evidence;
 - canonical candidacy only after an accepted matching audit and assembly;
@@ -107,6 +110,7 @@ python3 -m hose_quant.cli data adopt-daily-run --campaign-id hose-daily-20260805
 python3 -m hose_quant.cli data run-daily-campaign --campaign-id hose-daily-20260805 --max-tasks 20 --dry-run
 python3 -m hose_quant.cli data audit-daily-campaign --campaign-id hose-daily-20260805
 python3 -m hose_quant.cli data forensic-audit-daily-campaign --campaign-id hose-daily-20260805
+python3 -m hose_quant.cli data qualify-vci-source --campaign-id hose-daily-20260805-v1
 python3 -m hose_quant.cli data assemble-daily-campaign --campaign-id hose-daily-20260805
 ```
 
@@ -115,7 +119,11 @@ point-in-time limitations, and screening options. See
 [docs/reingestion-coverage-audit.md](docs/reingestion-coverage-audit.md) for the Phase 2.2
 re-ingestion and audit runbook. See
 [docs/universe-ingestion-campaign.md](docs/universe-ingestion-campaign.md) for campaign resume,
-adoption, audit, compatibility, and assembly rules.
+adoption, audit, compatibility, and assembly rules. See
+[docs/vci-source-qualification.md](docs/vci-source-qualification.md) for the VCI request semantics,
+bounded probe plan, live findings, unit decision, and scoped rejection. The forensic confirmation
+and corrected cross-source accounting are in
+[docs/vci-rejection-review.md](docs/vci-rejection-review.md).
 
 ## Reports
 
@@ -126,6 +134,7 @@ adoption, audit, compatibility, and assembly rules.
 - Daily coverage audits: `reports/data_quality/*-daily-coverage.{json,md}`
 - Campaign audits: `reports/data_quality/campaigns/<campaign-id>/`
 - Campaign forensic audits: `reports/data_quality/campaigns/<campaign-id>/forensics/`
+- VCI source qualifications: `reports/data_quality/source_qualification/vci/`
 
 Reports must not contain credentials, raw auth headers, or generated market data.
 

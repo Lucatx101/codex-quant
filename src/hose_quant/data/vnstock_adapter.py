@@ -28,12 +28,19 @@ from hose_quant.data.models import (
 from hose_quant.data.unit_provenance import (
     VNSTOCK_KBS_DAILY_UNIT_PROVENANCE,
     VNSTOCK_KBS_DATA_BACKEND,
+    VNSTOCK_VCI_DAILY_UNIT_PROVENANCE,
+    VNSTOCK_VCI_DATA_BACKEND,
 )
 from hose_quant.logging import redact_value
 
 TEST_SYMBOLS = ["VNINDEX", "FPT", "HPG", "VCB"]
 DAILY_OHLCV_MAX_BARS_PER_REQUEST = 1000
+VCI_QUALIFICATION_MAX_BARS_PER_REQUEST = 1200
 DAILY_OHLCV_COLUMNS = ["time", "open", "high", "low", "close", "volume"]
+DAILY_OHLCV_DATA_BACKENDS = {
+    VNSTOCK_KBS_DATA_BACKEND,
+    VNSTOCK_VCI_DATA_BACKEND,
+}
 DOCUMENTATION_SOURCES = [
     "https://vnstocks.com/docs",
     "https://vnstocks.com/docs/vnstock/du-lieu-thi-truong-market-data",
@@ -61,6 +68,11 @@ def categorize_exception(exc: BaseException) -> ErrorCategory:
     if isinstance(exc, ImportError) or "no module named" in text:
         return ErrorCategory.PACKAGE_NOT_INSTALLED
     if "dữ liệu trống cho mã" in text and "với interval" in text:
+        return ErrorCategory.EMPTY_RESPONSE
+    if (
+        "không tìm thấy dữ liệu" in text
+        and "kiểm tra lại mã chứng khoán hoặc thời gian truy xuất" in text
+    ):
         return ErrorCategory.EMPTY_RESPONSE
     if "rate limit" in text or "too many requests" in text or " 429" in text or "429" in text:
         return ErrorCategory.RATE_LIMIT
@@ -768,6 +780,31 @@ class VnstockDataProvider:
         return frame
 
     def fetch_daily_ohlcv(self, symbol: str, start: date, end: date) -> pd.DataFrame:
+        return self.fetch_daily_ohlcv_from_source(
+            symbol,
+            start,
+            end,
+            source=VNSTOCK_KBS_DATA_BACKEND,
+            count=DAILY_OHLCV_MAX_BARS_PER_REQUEST,
+        )
+
+    def fetch_daily_ohlcv_from_source(
+        self,
+        symbol: str,
+        start: date,
+        end: date,
+        *,
+        source: str,
+        count: int,
+    ) -> pd.DataFrame:
+        clean_source = source.strip().lower()
+        if clean_source not in DAILY_OHLCV_DATA_BACKENDS:
+            raise ValueError(f"Unsupported daily OHLCV backend: {source!r}.")
+        if count < 1 or count > VCI_QUALIFICATION_MAX_BARS_PER_REQUEST:
+            raise ValueError(
+                "Daily OHLCV count must be between 1 and the qualification safety limit "
+                f"of {VCI_QUALIFICATION_MAX_BARS_PER_REQUEST}."
+            )
         market, _reference = self._ensure_client()
         del _reference
         try:
@@ -776,8 +813,8 @@ class VnstockDataProvider:
                     start=start.isoformat(),
                     end=end.isoformat(),
                     resolution="1D",
-                    count=DAILY_OHLCV_MAX_BARS_PER_REQUEST,
-                    source=VNSTOCK_KBS_DATA_BACKEND,
+                    count=count,
+                    source=clean_source,
                 )
             )
         except Exception as exc:
@@ -790,6 +827,15 @@ class VnstockDataProvider:
 
     def daily_unit_provenance(self) -> DailyUnitProvenance:
         return VNSTOCK_KBS_DAILY_UNIT_PROVENANCE
+
+    @staticmethod
+    def daily_unit_provenance_for_source(source: str) -> DailyUnitProvenance:
+        clean_source = source.strip().lower()
+        if clean_source == VNSTOCK_KBS_DATA_BACKEND:
+            return VNSTOCK_KBS_DAILY_UNIT_PROVENANCE
+        if clean_source == VNSTOCK_VCI_DATA_BACKEND:
+            return VNSTOCK_VCI_DAILY_UNIT_PROVENANCE
+        raise ValueError(f"Unsupported daily OHLCV backend: {source!r}.")
 
     def fetch_intraday_bars(
         self,

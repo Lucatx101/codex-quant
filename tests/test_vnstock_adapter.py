@@ -97,6 +97,159 @@ def test_non_empty_provider_value_error_is_not_mapped_to_empty_frame(tmp_path) -
         )
 
 
+def test_vci_daily_request_forwards_official_source_and_count(tmp_path) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        report_dir=tmp_path / "reports",
+        max_retry_attempts=1,
+        provider_sleep_seconds=0,
+    )
+    provider = VnstockDataProvider(settings)
+    observed: dict[str, object] = {}
+
+    class Equity:
+        @staticmethod
+        def ohlcv(**kwargs):  # type: ignore[no-untyped-def]
+            observed.update(kwargs)
+            return pd.DataFrame(
+                [
+                    {
+                        "time": "2026-07-10",
+                        "open": 10,
+                        "high": 11,
+                        "low": 9,
+                        "close": 10,
+                        "volume": 100,
+                    }
+                ]
+            )
+
+    class Market:
+        @staticmethod
+        def equity(symbol: str) -> Equity:
+            observed["symbol"] = symbol
+            return Equity()
+
+    provider._market = Market()
+    provider._reference = object()
+    frame = provider.fetch_daily_ohlcv_from_source(
+        "fpt",
+        start=pd.Timestamp("2026-07-01").date(),
+        end=pd.Timestamp("2026-07-10").date(),
+        source="VCI",
+        count=1200,
+    )
+
+    assert len(frame) == 1
+    assert observed == {
+        "symbol": "FPT",
+        "start": "2026-07-01",
+        "end": "2026-07-10",
+        "resolution": "1D",
+        "count": 1200,
+        "source": "vci",
+    }
+    assert provider.call_count == 1
+
+
+def test_existing_daily_fetch_still_delegates_to_kbs_contract(tmp_path) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        report_dir=tmp_path / "reports",
+        max_retry_attempts=1,
+        provider_sleep_seconds=0,
+    )
+    provider = VnstockDataProvider(settings)
+    observed: dict[str, object] = {}
+
+    class Equity:
+        @staticmethod
+        def ohlcv(**kwargs):  # type: ignore[no-untyped-def]
+            observed.update(kwargs)
+            return pd.DataFrame(columns=["time", "open", "high", "low", "close", "volume"])
+
+    class Market:
+        @staticmethod
+        def equity(symbol: str) -> Equity:
+            observed["symbol"] = symbol
+            return Equity()
+
+    provider._market = Market()
+    provider._reference = object()
+    start = pd.Timestamp("2026-07-01").date()
+    end = pd.Timestamp("2026-07-10").date()
+
+    provider.fetch_daily_ohlcv("fpt", start=start, end=end)
+
+    assert observed == {
+        "symbol": "FPT",
+        "start": "2026-07-01",
+        "end": "2026-07-10",
+        "resolution": "1D",
+        "count": 1000,
+        "source": "kbs",
+    }
+    assert provider.daily_unit_provenance() == provider.daily_unit_provenance_for_source("kbs")
+
+
+def test_vci_empty_error_is_not_retried_and_maps_to_empty_frame(tmp_path) -> None:
+    settings = AppSettings(
+        _env_file=None,
+        data_dir=tmp_path / "data",
+        report_dir=tmp_path / "reports",
+        max_retry_attempts=2,
+        provider_sleep_seconds=0,
+    )
+    provider = VnstockDataProvider(settings)
+
+    class EmptyEquity:
+        @staticmethod
+        def ohlcv(**_kwargs):  # type: ignore[no-untyped-def]
+            raise ValueError(
+                "Không tìm thấy dữ liệu. Vui lòng kiểm tra lại mã chứng khoán "
+                "hoặc thời gian truy xuất."
+            )
+
+    class Market:
+        @staticmethod
+        def equity(_symbol: str) -> EmptyEquity:
+            return EmptyEquity()
+
+    provider._market = Market()
+    provider._reference = object()
+    frame = provider.fetch_daily_ohlcv_from_source(
+        "GEE",
+        start=pd.Timestamp("2020-01-01").date(),
+        end=pd.Timestamp("2021-12-30").date(),
+        source="vci",
+        count=600,
+    )
+
+    assert frame.empty
+    assert frame.columns.tolist() == ["time", "open", "high", "low", "close", "volume"]
+    assert provider.call_count == 1
+
+
+def test_daily_source_and_qualification_count_are_bounded(tmp_path) -> None:
+    provider = VnstockDataProvider(
+        AppSettings(
+            _env_file=None,
+            data_dir=tmp_path / "data",
+            report_dir=tmp_path / "reports",
+        )
+    )
+    start = pd.Timestamp("2026-07-01").date()
+    end = pd.Timestamp("2026-07-10").date()
+
+    with pytest.raises(ValueError, match="Unsupported daily OHLCV backend"):
+        provider.fetch_daily_ohlcv_from_source("FPT", start, end, source="invented", count=30)
+    with pytest.raises(ValueError, match="qualification safety limit"):
+        provider.fetch_daily_ohlcv_from_source("FPT", start, end, source="vci", count=1201)
+    assert provider.call_count == 0
+
+
 def test_empty_response_mapping() -> None:
     inspection = inspect_dataframe(pd.DataFrame(columns=["time", "open"]))
     assert inspection.error_category is ErrorCategory.EMPTY_RESPONSE

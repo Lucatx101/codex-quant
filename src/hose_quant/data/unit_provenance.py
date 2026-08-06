@@ -21,6 +21,10 @@ VNSTOCK_KBS_DATA_BACKEND = "kbs"
 VNSTOCK_KBS_UNIT_POLICY_NAME = "vnstock-kbs-daily-ohlcv"
 VNSTOCK_KBS_UNIT_POLICY_VERSION = "1"
 VNSTOCK_KBS_EVIDENCE_REFERENCE = "vnstock-kbs-ohlcv-units@2026-01-31"
+VNSTOCK_VCI_DATA_BACKEND = "vci"
+VNSTOCK_VCI_UNIT_POLICY_NAME = "vnstock-vci-daily-ohlcv"
+VNSTOCK_VCI_UNIT_POLICY_VERSION = "1"
+VNSTOCK_VCI_EVIDENCE_REFERENCE = "vnstock-vci-ohlcv-wrapper-units@2026-08-06"
 
 VNSTOCK_KBS_DAILY_UNIT_PROVENANCE = DailyUnitProvenance(
     schema_version=DAILY_UNIT_PROVENANCE_SCHEMA_VERSION,
@@ -36,7 +40,24 @@ VNSTOCK_KBS_DAILY_UNIT_PROVENANCE = DailyUnitProvenance(
     evidence_reference=VNSTOCK_KBS_EVIDENCE_REFERENCE,
 )
 
-REGISTERED_DAILY_UNIT_PROVENANCE = (VNSTOCK_KBS_DAILY_UNIT_PROVENANCE,)
+VNSTOCK_VCI_DAILY_UNIT_PROVENANCE = DailyUnitProvenance(
+    schema_version=DAILY_UNIT_PROVENANCE_SCHEMA_VERSION,
+    provider="vnstock",
+    data_backend=VNSTOCK_VCI_DATA_BACKEND,
+    source_resolution="1D",
+    unit_policy_name=VNSTOCK_VCI_UNIT_POLICY_NAME,
+    unit_policy_version=VNSTOCK_VCI_UNIT_POLICY_VERSION,
+    price_unit=PriceUnit.THOUSAND_VND,
+    volume_unit=VolumeUnit.SHARES,
+    price_scale_to_vnd=1000.0,
+    volume_scale_to_shares=1.0,
+    evidence_reference=VNSTOCK_VCI_EVIDENCE_REFERENCE,
+)
+
+REGISTERED_DAILY_UNIT_PROVENANCE = (
+    VNSTOCK_KBS_DAILY_UNIT_PROVENANCE,
+    VNSTOCK_VCI_DAILY_UNIT_PROVENANCE,
+)
 
 PROVENANCE_COLUMN_TO_FIELD = {
     "unit_provenance_schema_version": "schema_version",
@@ -229,7 +250,7 @@ def _verified_policy(provenance: DailyUnitProvenance) -> LiquidityUnitPolicy:
         evidence_reference=provenance.evidence_reference,
         verification_reason=(
             "Every selected daily row carries one identical provenance record that exactly "
-            "matches the registered vnstock KBS daily OHLCV unit contract."
+            "matches a registered vnstock provider/backend daily OHLCV unit contract."
         ),
         vnd_traded_value_permitted=True,
     )

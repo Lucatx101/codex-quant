@@ -235,6 +235,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     campaign_forensics.add_argument("--campaign-id", required=True)
 
+    vci_qualification = data_subparsers.add_parser(
+        "qualify-vci-source",
+        help="Run a bounded, manifested qualification of vnstock VCI daily history.",
+    )
+    vci_qualification.add_argument("--campaign-id", required=True)
+    vci_qualification.add_argument(
+        "--live",
+        action="store_true",
+        help="Execute the fixed sequential VCI probe plan; otherwise print a dry-run only.",
+    )
+
     campaign_assemble = data_subparsers.add_parser(
         "assemble-daily-campaign",
         help="Publish one versioned daily dataset after every campaign task resolves.",
@@ -291,14 +302,19 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _run_data_command(args: argparse.Namespace, settings: AppSettings) -> int:
-    live_command = args.data_command in {
+    provider_command = args.data_command in {
         "fetch-universe",
         "backfill-daily",
         "fetch-intraday",
         "snapshot-quotes",
         "run-daily-campaign",
     }
-    if live_command and not args.dry_run:
+    live_command = (
+        provider_command and not getattr(args, "dry_run", False)
+    ) or (
+        args.data_command == "qualify-vci-source" and args.live
+    )
+    if live_command:
         try:
             settings.require_vnstock_api_key()
         except MissingCredentialError as exc:
@@ -389,6 +405,11 @@ def _run_data_command(args: argparse.Namespace, settings: AppSettings) -> int:
             )
         elif args.data_command == "forensic-audit-daily-campaign":
             result = workflow.forensic_audit_daily_campaign(campaign_id=args.campaign_id)
+        elif args.data_command == "qualify-vci-source":
+            result = workflow.qualify_vci_source(
+                campaign_id=args.campaign_id,
+                live=args.live,
+            )
         elif args.data_command == "assemble-daily-campaign":
             result = workflow.assemble_daily_campaign(campaign_id=args.campaign_id)
         else:
@@ -413,6 +434,7 @@ def _run_data_command(args: argparse.Namespace, settings: AppSettings) -> int:
         "coverage_quality_status": "Coverage-quality status",
         "research_readiness_status": "Research-readiness status",
         "canonical_candidate": "Canonical candidate",
+        "final_verdict": "Final verdict",
     }
     for key, label in campaign_status_labels.items():
         if key in result.manifest.parameters:
