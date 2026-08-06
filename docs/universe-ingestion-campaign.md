@@ -254,6 +254,59 @@ establish:
 
 Those limitations stay explicit in state, coverage outputs, reports, manifests, and documentation.
 
+## Failed And Stale Forensics
+
+Classify the campaign's current failed and stale tasks entirely from local immutable evidence:
+
+```bash
+python3 -m hose_quant.cli data forensic-audit-daily-campaign \
+  --campaign-id hose-daily-20260805
+```
+
+`daily-campaign-forensic-audit-v1` makes no provider calls and does not reconstruct campaign
+state. It reads the existing state snapshot under the campaign lock, then:
+
+1. hashes every selected source manifest, raw JSONL, and stored normalized artifact used;
+2. reconstructs failed-task normalization in memory without publishing a Parquet file;
+3. compares raw and normalized date plus OHLCV values exactly;
+4. reruns the standard high/low/open/close relationship rules row by row;
+5. compares every stale raw response with its stored normalized Parquet;
+6. searches later attached campaign evidence for a historical resumption after a stale edge;
+7. records one category, evidence set, determinism statement, retry decision, disposition, and
+   exact next action for every failed and stale task.
+
+The report distinguishes captured KBS output defects from project mapping or normalization
+defects. An open outside the reported range is classified separately when it equals the previous
+observation's close. A close outside the reported range remains a source-semantics unknown unless
+authoritative adjustment or session-field evidence resolves it. Mixed and otherwise unexplained
+signatures remain separate categories; the command never infers replacement OHLC values.
+
+A stale historical tail with a later observation is not treated as truncation merely because the
+edge is missing. Responses below the documented 1,000-row cap, exact raw/normalized equality, and
+later resumption are recorded, while the exact listing, halt, suspension, transfer, or
+sparse-trading cause remains unknown without authoritative status and calendar evidence. A stale
+campaign-end task remains blocked until a new observation or authoritative current status makes a
+bounded retry defensible.
+
+Immediate retries are never selected by this command. Provider-side OHLC inconsistencies remain
+quarantined and stale tasks remain excluded from assembly. A retry becomes appropriate only after
+new provider evidence, an authoritative source-status finding, or a separately verified source
+contract changes the relevant hypothesis. A raw/normalized mismatch or row-cap response is
+reported as a concrete investigation branch rather than silently folded into a stale category.
+
+The generated JSON contains complete per-row evidence; Markdown provides the category and task
+index. Both remain ignored by Git:
+
+```text
+reports/data_quality/campaigns/<campaign-id>/forensics/<run-id>.json
+reports/data_quality/campaigns/<campaign-id>/forensics/<run-id>.md
+data/manifests/<forensic-operation-run-id>.json
+```
+
+Task-level symbol counts can overlap: one symbol may contain both a failed task and a stale task.
+The report therefore records both symbols containing each task status and the mutually exclusive
+campaign symbol statuses from `state.json`.
+
 ## Assembly Rules
 
 `assemble-daily-campaign` publishes nothing unless every task is `complete` or `empty`. It then:

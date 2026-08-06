@@ -24,6 +24,7 @@ DAILY_CAMPAIGN_READINESS_POLICY_VERSION: Literal[
 ] = "campaign-research-readiness-policy-v1"
 ASSEMBLED_DAILY_CONTRACT_VERSION = "assembled-daily-v1"
 DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION = "daily-campaign-audit-v2"
+DAILY_CAMPAIGN_FORENSIC_AUDIT_CONTRACT_VERSION = "daily-campaign-forensic-audit-v1"
 
 
 class DataContract(BaseModel):
@@ -423,5 +424,8 @@ def contract_versions() -> dict[str, str]:
         "daily_campaign_readiness_policy": DAILY_CAMPAIGN_READINESS_POLICY_VERSION,
         "assembled_daily": ASSEMBLED_DAILY_CONTRACT_VERSION,
         "daily_campaign_audit": DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION,
+        "daily_campaign_forensic_audit": (
+            DAILY_CAMPAIGN_FORENSIC_AUDIT_CONTRACT_VERSION
+        ),
         "market_time": MARKET_TIME_POLICY_VERSION,
     }

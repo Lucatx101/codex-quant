@@ -229,6 +229,12 @@ def build_parser() -> argparse.ArgumentParser:
     campaign_audit.add_argument("--min-vnd-usable-symbol-ratio", type=float, default=None)
     campaign_audit.add_argument("--max-absent-symbol-ratio", type=float, default=None)
 
+    campaign_forensics = data_subparsers.add_parser(
+        "forensic-audit-daily-campaign",
+        help="Classify failed and stale campaign evidence without provider calls.",
+    )
+    campaign_forensics.add_argument("--campaign-id", required=True)
+
     campaign_assemble = data_subparsers.add_parser(
         "assemble-daily-campaign",
         help="Publish one versioned daily dataset after every campaign task resolves.",
@@ -381,6 +387,8 @@ def _run_data_command(args: argparse.Namespace, settings: AppSettings) -> int:
                 config=_daily_coverage_config(args, settings),
                 readiness_policy=_daily_campaign_readiness_policy(args, settings),
             )
+        elif args.data_command == "forensic-audit-daily-campaign":
+            result = workflow.forensic_audit_daily_campaign(campaign_id=args.campaign_id)
         elif args.data_command == "assemble-daily-campaign":
             result = workflow.assemble_daily_campaign(campaign_id=args.campaign_id)
         else:

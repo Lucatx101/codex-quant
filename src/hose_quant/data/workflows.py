@@ -18,6 +18,7 @@ from hose_quant.data.contracts import (
     AVAILABILITY_CONTRACT_VERSION,
     DAILY_CAMPAIGN_AUDIT_CONTRACT_VERSION,
     DAILY_CAMPAIGN_CONTRACT_VERSION,
+    DAILY_CAMPAIGN_FORENSIC_AUDIT_CONTRACT_VERSION,
     DAILY_CAMPAIGN_READINESS_CONTRACT_VERSION,
     DAILY_CAMPAIGN_STATE_CONTRACT_VERSION,
     DAILY_COVERAGE_CONTRACT_VERSION,
@@ -44,6 +45,7 @@ from hose_quant.data.feature_inputs import (
 from hose_quant.data.feature_inputs import (
     build_daily_panel as build_feature_daily_panel,
 )
+from hose_quant.data.forensics import write_daily_campaign_forensic_audit
 from hose_quant.data.manifests import build_manifest, create_run_id, write_manifest
 from hose_quant.data.market_time import aware_timestamp_to_utc
 from hose_quant.data.models import (
@@ -53,6 +55,7 @@ from hose_quant.data.models import (
     DailyCampaignPlan,
     DailyCampaignReadinessPolicy,
     DailyCampaignReceipt,
+    DailyCampaignState,
     DailyCoverageConfig,
     LiquidityScreenConfig,
     LiquidityUnitPolicy,
@@ -1669,6 +1672,136 @@ class DataWorkflow:
                 "Audit success means evidence was evaluated; it does not mean the readiness "
                 "policy accepted the campaign.",
                 *CAMPAIGN_KNOWN_RISKS,
+            ],
+            validation_results=validation_results,
+        )
+        manifest_path = write_manifest(manifest, self.storage.manifest_root)
+        return WorkflowResult(
+            manifest=manifest,
+            validation_results=validation_results,
+            manifest_path=str(manifest_path),
+        )
+
+    def forensic_audit_daily_campaign(self, *, campaign_id: str) -> WorkflowResult:
+        started = utc_now()
+        run_id = _campaign_operation_run_id("forensic-audit-daily-campaign", started)
+        manager = DailyCampaignManager(self.storage)
+        plan = manager.load_plan(campaign_id)
+        state_path = self.storage.daily_campaign_state_path(campaign_id)
+        if not state_path.exists():
+            raise ValueError(f"Campaign state not found: {campaign_id}.")
+        report_root = (
+            self.settings.report_dir
+            / "data_quality"
+            / "campaigns"
+            / campaign_id
+            / "forensics"
+        )
+        with manager.lock(campaign_id):
+            state = DailyCampaignState.model_validate_json(
+                state_path.read_text(encoding="utf-8")
+            )
+            artifacts = write_daily_campaign_forensic_audit(
+                plan,
+                state,
+                storage=self.storage,
+                generated_at_utc=started,
+                json_path=report_root / f"{run_id}.json",
+                markdown_path=report_root / f"{run_id}.md",
+            )
+
+        summary = artifacts.payload["summary"]
+        missing_evidence = int(summary["tasks_missing_required_local_evidence"])
+        code_fix_tasks = int(summary["tasks_requiring_code_fix"])
+        expected_tasks = state.task_counts.get("failed", 0) + state.task_counts.get("stale", 0)
+        classified_tasks = int(summary["classified_task_count"])
+        validation_results = [
+            ValidationResult(
+                dataset_name="daily_campaign_forensics",
+                severity=(
+                    ValidationSeverity.INFO
+                    if classified_tasks == expected_tasks
+                    else ValidationSeverity.ERROR
+                ),
+                check_name="all_failed_and_stale_tasks_classified",
+                message=(
+                    f"Classified {classified_tasks} of {expected_tasks} failed or stale tasks."
+                ),
+                blocks_output=classified_tasks != expected_tasks,
+            ),
+            ValidationResult(
+                dataset_name="daily_campaign_forensics",
+                severity=(
+                    ValidationSeverity.INFO
+                    if missing_evidence == 0
+                    else ValidationSeverity.ERROR
+                ),
+                check_name="required_local_evidence_available",
+                message=f"{missing_evidence} tasks lack required local forensic evidence.",
+                affected_row_count=missing_evidence,
+                blocks_output=missing_evidence > 0,
+            ),
+            ValidationResult(
+                dataset_name="daily_campaign_forensics",
+                severity=(
+                    ValidationSeverity.INFO
+                    if code_fix_tasks == 0
+                    else ValidationSeverity.ERROR
+                ),
+                check_name="code_defects_resolved",
+                message=f"{code_fix_tasks} tasks indicate a code defect requiring resolution.",
+                affected_row_count=code_fix_tasks,
+                blocks_output=code_fix_tasks > 0,
+            ),
+        ]
+        status = "failed" if has_blocking_errors(validation_results) else "success"
+        impact = summary["campaign_impact"]
+        manifest = build_manifest(
+            run_id=run_id,
+            command="data forensic-audit-daily-campaign",
+            started_at_utc=started,
+            finished_at_utc=utc_now(),
+            status=status,
+            symbols=sorted({str(record["symbol"]) for record in artifacts.payload["tasks"]}),
+            exchange=plan.exchange,
+            start_date=plan.start_date.isoformat(),
+            end_date=plan.end_date.isoformat(),
+            resolution=plan.source_resolution,
+            row_counts={
+                "classified_tasks": classified_tasks,
+                "failed_tasks": int(summary["failed_task_count"]),
+                "failed_symbols": int(summary["failed_symbol_count"]),
+                "symbols_with_failed_tasks": int(summary["symbols_with_failed_tasks"]),
+                "stale_tasks": int(summary["stale_task_count"]),
+                "stale_symbols": int(summary["stale_symbol_count"]),
+                "symbols_with_both_failed_and_stale_tasks": int(
+                    summary["symbols_with_both_failed_and_stale_tasks"]
+                ),
+                "not_ingested_symbols": int(summary["not_ingested_symbol_count"]),
+                "failed_affected_rows": int(summary["failed_affected_row_count"]),
+                "immediate_retry_tasks": int(summary["tasks_eligible_for_immediate_retry"]),
+                "missing_evidence_tasks": missing_evidence,
+                "code_fix_tasks": code_fix_tasks,
+            },
+            input_paths=artifacts.input_paths,
+            output_paths=[artifacts.json_path, artifacts.markdown_path],
+            parameters={
+                "campaign_id": campaign_id,
+                "category_counts": summary["category_counts"],
+                **impact,
+            },
+            data_contract_versions={
+                "daily_campaign": DAILY_CAMPAIGN_CONTRACT_VERSION,
+                "daily_campaign_state": DAILY_CAMPAIGN_STATE_CONTRACT_VERSION,
+                "daily_campaign_forensic_audit": (
+                    DAILY_CAMPAIGN_FORENSIC_AUDIT_CONTRACT_VERSION
+                ),
+                "normalized_daily": NORMALIZED_DAILY_CONTRACT_VERSION,
+            },
+            notes=[
+                "This command makes no provider calls and does not reassess campaign state.",
+                "Unknown source semantics and stale-event causes remain explicit unknowns.",
+                "No OHLC value is repaired and no validation rule is weakened.",
             ],
             validation_results=validation_results,
         )

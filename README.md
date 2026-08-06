@@ -27,6 +27,7 @@ assembly from explicit research-readiness acceptance:
 - immutable full-universe campaign plans and per-task attempt receipts;
 - provider-limited batches with interruption recovery and explicit retry controls;
 - campaign-level virtual coverage and compatibility audits;
+- deterministic offline forensic classification of failed and stale campaign tasks;
 - deterministic, atomic, versioned assembly with row-level source lineage;
 - versioned campaign-level coverage-quality policy and readiness evidence;
 - canonical candidacy only after an accepted matching audit and assembly;
@@ -105,6 +106,7 @@ python3 -m hose_quant.cli data init-daily-campaign --campaign-id hose-daily-2026
 python3 -m hose_quant.cli data adopt-daily-run --campaign-id hose-daily-20260805 --daily-run-id RUN_ID
 python3 -m hose_quant.cli data run-daily-campaign --campaign-id hose-daily-20260805 --max-tasks 20 --dry-run
 python3 -m hose_quant.cli data audit-daily-campaign --campaign-id hose-daily-20260805
+python3 -m hose_quant.cli data forensic-audit-daily-campaign --campaign-id hose-daily-20260805
 python3 -m hose_quant.cli data assemble-daily-campaign --campaign-id hose-daily-20260805
 ```
 
@@ -123,6 +125,7 @@ adoption, audit, compatibility, and assembly rules.
 - Feature-input diagnostics: `reports/feature_inputs/` when a daily panel is built
 - Daily coverage audits: `reports/data_quality/*-daily-coverage.{json,md}`
 - Campaign audits: `reports/data_quality/campaigns/<campaign-id>/`
+- Campaign forensic audits: `reports/data_quality/campaigns/<campaign-id>/forensics/`
 
 Reports must not contain credentials, raw auth headers, or generated market data.
 

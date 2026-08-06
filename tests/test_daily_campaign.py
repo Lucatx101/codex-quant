@@ -562,6 +562,7 @@ def test_phase_23_generated_outputs_are_ignored_by_git() -> None:
         "data/campaigns/vnstock/daily/campaign_id=test/receipts/task/run.json",
         "data/assembled/vnstock/daily/campaign_id=test/dataset_id=v1/symbol=FPT.parquet",
         "reports/data_quality/campaigns/test/audit.json",
+        "reports/data_quality/campaigns/test/forensics/audit.json",
     ]
     result = subprocess.run(
         ["git", "check-ignore", *paths],
